@@ -142,7 +142,9 @@ class Peer:
         self.peer_conns: Dict[str, PeerConnection] = {}
         self.lock = asyncio.Lock()
 
-    async def register(self):
+        asyncio.create_task(self._register())
+
+    async def _register(self):
         while True:
             async with websockets.connect(f"ws://{self.signaling_url}/register") as ws:
                 async with self.lock:
@@ -304,8 +306,6 @@ async def main():
         stun_url="stun:{}:{}".format(config["stun"]["ip"], config["stun"]["port"]),
         channel_handler=handler,
     )
-
-    asyncio.create_task(peer.register())
 
     await delegator(peer)
 
