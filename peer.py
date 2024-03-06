@@ -98,7 +98,9 @@ class PeerConnection:
             if label in self.channels:
                 return self.channels[label]
             else:
-                self.channels[label] = DataChannel(self.pc.createDataChannel(label))
+                channel = DataChannel(self.pc.createDataChannel(label))
+                self.channels[label] = channel
+                return channel
 
     async def close(self, label: str):
         """Close a data channel with given label."""
@@ -208,10 +210,20 @@ class Peer:
                     async with self.lock:
                         self.ws = None
 
-    async def connect(self, to_worker_id: str, label: str) -> DataChannel | None:
+    async def connect(
+        self, to_worker_id: str, label: str
+    ) -> tuple[PeerConnection, DataChannel] | None:
         """Please don't connect to the same worker simultaneously. It's not supported yet."""
 
         async with self.lock:
+            if to_worker_id in self.peer_conns:
+                old_pc = self.peer_conns[to_worker_id]
+                if label in old_pc.channels:
+                    return old_pc, old_pc.channels[label]
+                else:
+                    channel = await old_pc.create(label)
+                    return old_pc, channel
+
             ws = self.ws
         if ws is None:
             logger.warning("Not connected to signaling server")
@@ -260,20 +272,24 @@ class Peer:
         logger.info("Connected to %s", to_worker_id)
 
         async with self.lock:
-            self.peer_conns[to_worker_id] = PeerConnection(
-                pc, self.channel_handler, channel
-            )
-            return channel
+            new_channel = DataChannel(channel)
+            new_pc = PeerConnection(pc, self.channel_handler, new_channel)
+            self.peer_conns[to_worker_id] = new_pc
+            return new_pc, new_channel
 
 
 async def delegator(peer: Peer):
+    peer_conn = None
     channel = None
     while True:
         input: str = await aioconsole.ainput()
         op, *args = input.split(" ")
         if op == "connect":
-            channel = await peer.connect(args[0], "hook")
+            peer_conn, channel = await peer.connect(args[0], "hook")
             logger.info("Connected")
+        elif op == "new":
+            channel = await peer_conn.create(args[0])
+            logger.info("New channel created")
         elif op == "send":
             if channel is not None:
                 channel.send(json.dumps(HookMessage("hello", args[0]).to_json()))
@@ -287,13 +303,11 @@ async def main():
     config = toml.load("config.toml")
 
     async def handler(channel: DataChannel):
-        if channel.label() == "hook":
+        async def cat(data):
+            logger.info(data)
 
-            async def cat(data):
-                logger.info(data)
-
-            hook = Webhook(channel)
-            await hook.on("hello", cat)
+        hook = Webhook(channel)
+        await hook.on("hello", cat)
 
     peer = Peer(
         worker_id=config["worker"]["id"],
