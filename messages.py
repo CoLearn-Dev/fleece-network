@@ -50,6 +50,6 @@ class ConnectMessage(Jsonable):
 
 
 @dataclass
-class ControlMessage(Jsonable):
+class HookMessage(Jsonable):
     op: str
     data: str
