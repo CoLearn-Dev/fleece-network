@@ -18,7 +18,7 @@ logging.config.fileConfig("logging.conf")
 logger = logging.getLogger(__name__)
 
 
-class DataChannel:
+class OutwardDataChannel:
     def __init__(self, channel: RTCDataChannel):
         self.channel = channel
         self.read_queue = asyncio.Queue()
@@ -43,21 +43,27 @@ class DataChannel:
         self.channel.send(message)
 
 
-class Webhook:
-    def __init__(self, channel: DataChannel):
+class InwardDataChannel:
+    def __init__(self, channel: RTCDataChannel):
         self.channel = channel
         self.hooks: Dict[str, Callable[[str], Coroutine[Any, Any, None]]] = {}
         self.lock = asyncio.Lock()
-        asyncio.create_task(self.distribute())
 
-    async def distribute(self):
-        while True:
-            message = await self.channel.recv()
+        @channel.on("open")
+        async def on_open():
+            logger.info("Data channel opened: %s", self.label())
+
+        @channel.on("message")
+        async def on_message(message: str):
+            logger.info("Channel %s receives message: %s", self.label(), message)
             message = HookMessage.from_json(json.loads(message))
             async with self.lock:
                 callback = self.hooks.get(message.op)
                 if callback is not None:
                     asyncio.create_task(callback(message.data))
+
+    def label(self) -> str:
+        return self.channel.label
 
     async def on(self, hook: str, callback: Callable[[str], Coroutine[Any, Any, None]]):
         async with self.lock:
@@ -68,8 +74,10 @@ class PeerConnection:
     def __init__(
         self,
         pc: RTCPeerConnection,
-        channel_handler: Callable[[DataChannel], Coroutine[Any, Any, None]] = None,
-        channel: DataChannel | None = None,
+        channel_handler: Callable[
+            [InwardDataChannel], Coroutine[Any, Any, None]
+        ] = None,
+        out_channel: OutwardDataChannel | None = None,
     ):
         """
         Create a peer connection with given RTCPeerConnection and DataChannel.
@@ -78,38 +86,41 @@ class PeerConnection:
         """
 
         self.pc = pc
-        self.channels: Dict[str, DataChannel] = {}
+        self.in_channels: Dict[str, InwardDataChannel] = {}
+        self.out_channels: Dict[str, OutwardDataChannel] = {}
         self.lock = asyncio.Lock()
 
-        if channel is not None:
-            self.channels[channel.label] = channel
+        if out_channel is not None:
+            self.out_channels[out_channel.label] = out_channel
 
         @pc.on("datachannel")
         async def on_datachannel(channel: RTCDataChannel):
             async with self.lock:
-                new_channel = DataChannel(channel)
-                self.channels[new_channel.label()] = channel
-            await channel_handler(new_channel)
-            logger.info("Data channel created: %s", new_channel.label())
+                in_channel = InwardDataChannel(channel)
+                self.in_channels[in_channel.label()] = in_channel
+            await channel_handler(in_channel)
+            logger.info("Data channel created: %s", in_channel.label())
 
-    async def create(self, label: str) -> DataChannel:
+    async def create(self, label: str) -> OutwardDataChannel | None:
         """Create a data channel with given label."""
         async with self.lock:
-            if label in self.channels:
-                return self.channels[label]
+            if label in self.out_channels:
+                return self.out_channels[label]
+            elif label in self.in_channels:
+                return None
             else:
-                channel = DataChannel(self.pc.createDataChannel(label))
-                self.channels[label] = channel
-                return channel
+                out_channel = OutwardDataChannel(self.pc.createDataChannel(label))
+                self.out_channels[label] = out_channel
+                return out_channel
 
     async def close(self, label: str):
         """Close a data channel with given label."""
-        channel = None
+        out_channel = None
         async with self.lock:
-            if label in self.channels:
-                channel = self.channels.pop(label)
-        if channel is not None:
-            await channel.close()
+            if label in self.out_channels:
+                out_channel = self.out_channels.pop(label)
+        if out_channel is not None:
+            await out_channel.close()
 
 
 class Peer:
@@ -121,7 +132,7 @@ class Peer:
         turn_username: str,
         turn_credential: str,
         stun_url: str,
-        channel_handler: Callable[[DataChannel], Coroutine[Any, Any, None]],
+        channel_handler: Callable[[InwardDataChannel], Coroutine[Any, Any, None]],
     ):
         self.worker_id = worker_id
         """A unique id for worker. Only for identification."""
@@ -212,22 +223,24 @@ class Peer:
 
     async def connect(
         self, to_worker_id: str, label: str
-    ) -> tuple[PeerConnection, DataChannel] | None:
+    ) -> tuple[PeerConnection, OutwardDataChannel | None] | None:
         """Please don't connect to the same worker simultaneously. It's not supported yet."""
 
         async with self.lock:
             if to_worker_id in self.peer_conns:
-                old_pc = self.peer_conns[to_worker_id]
-                if label in old_pc.channels:
-                    return old_pc, old_pc.channels[label]
+                existing_pc = self.peer_conns[to_worker_id]
+                if label in existing_pc.out_channels:
+                    return existing_pc, existing_pc.out_channels[label]
+                elif label in existing_pc.in_channels:
+                    return existing_pc, None
                 else:
-                    channel = await old_pc.create(label)
-                    return old_pc, channel
+                    out_channel = await existing_pc.create(label)
+                    return existing_pc, out_channel
 
             ws = self.ws
-        if ws is None:
-            logger.warning("Not connected to signaling server")
-            return None
+            if ws is None:
+                logger.warning("Not connected to signaling server")
+                return None
 
         # establish connection
         pc = RTCPeerConnection(
@@ -272,42 +285,45 @@ class Peer:
         logger.info("Connected to %s", to_worker_id)
 
         async with self.lock:
-            new_channel = DataChannel(channel)
-            new_pc = PeerConnection(pc, self.channel_handler, new_channel)
+            out_channel = OutwardDataChannel(channel)
+            new_pc = PeerConnection(pc, self.channel_handler, out_channel)
             self.peer_conns[to_worker_id] = new_pc
-            return new_pc, new_channel
+            return new_pc, out_channel
 
 
 async def delegator(peer: Peer):
     peer_conn = None
     channel = None
     while True:
-        input: str = await aioconsole.ainput()
-        op, *args = input.split(" ")
-        if op == "connect":
-            peer_conn, channel = await peer.connect(args[0], "hook")
-            logger.info("Connected")
-        elif op == "new":
-            channel = await peer_conn.create(args[0])
-            logger.info("New channel created")
-        elif op == "send":
-            if channel is not None:
-                channel.send(json.dumps(HookMessage("hello", args[0]).to_json()))
+        try:
+            input: str = await aioconsole.ainput()
+            op, *args = input.split(" ")
+            if op == "connect":
+                peer_conn, channel = await peer.connect(
+                    args[0], f"{peer.worker_id}_hook"
+                )
+            elif op == "new":
+                channel = await peer_conn.create(f"{peer.worker_id}_{args[0]}")
+                logger.info("New channel created")
+            elif op == "send":
+                if channel is not None:
+                    channel.send(json.dumps(HookMessage("hello", args[0]).to_json()))
+                else:
+                    logger.warning("No channel")
             else:
-                logger.warning("No channel")
-        else:
-            logger.warning("Unknown operation")
+                logger.warning("Unknown operation")
+        except Exception as e:
+            logger.warning("Some exception: ", e)
 
 
 async def main():
     config = toml.load("config.toml")
 
-    async def handler(channel: DataChannel):
+    async def handler(channel: InwardDataChannel):
         async def cat(data):
             logger.info(data)
 
-        hook = Webhook(channel)
-        await hook.on("hello", cat)
+        await channel.on("hello", cat)
 
     peer = Peer(
         worker_id=config["worker"]["id"],
