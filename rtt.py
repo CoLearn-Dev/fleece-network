@@ -1,5 +1,4 @@
 import asyncio
-import json
 from typing import Any
 import toml
 import logging
@@ -7,7 +6,7 @@ import logging.config
 import aioconsole
 import time
 import pickle
-from peerrtc.peer import InwardDataChannel, Peer
+from peerrtc.peer import InwardDataChannel, Peer, TurnConfig
 from peerrtc.messages import ControlMessage
 
 logging.config.fileConfig("logging.conf")
@@ -52,9 +51,7 @@ async def main():
         signaling_url="{}:{}".format(
             config["signaling"]["ip"], config["signaling"]["port"]
         ),
-        turn_url="turn:{}:{}".format(config["turn"]["ip"], config["turn"]["port"]),
-        turn_username=config["turn"]["username"],
-        turn_credential=config["turn"]["credential"],
+        turn_configs=[TurnConfig(**subconfig) for subconfig in config["turn"]],
         stun_url="stun:{}:{}".format(config["stun"]["ip"], config["stun"]["port"]),
         channel_handler=handler,
     )

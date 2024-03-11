@@ -1,9 +1,10 @@
 import asyncio
+from dataclasses import dataclass
 import pickle
 import websockets
 import logging
 import logging.config
-from typing import Any, Callable, Coroutine, Dict
+from typing import Any, Callable, Coroutine, Dict, List
 from peerrtc.messages import ControlMessage, RegisterMessage, ConnectMessage
 from aiortc import (
     RTCPeerConnection,
@@ -11,6 +12,19 @@ from aiortc import (
     RTCIceServer,
     RTCDataChannel,
 )
+
+
+@dataclass
+class TurnConfig:
+    ip: str
+    port: int
+    username: str
+    credential: str
+
+    def to_ice_server(self) -> RTCIceServer:
+        return RTCIceServer(
+            f"turn:{self.ip}:{self.port}?transport=udp", self.username, self.credential
+        )
 
 
 class OutwardDataChannel:
@@ -133,9 +147,7 @@ class Peer:
         self,
         worker_id: str,
         signaling_url: str,
-        turn_url: str,
-        turn_username: str,
-        turn_credential: str,
+        turn_configs: List[TurnConfig],
         stun_url: str,
         channel_handler: Callable[[InwardDataChannel], Coroutine[Any, Any, None]],
     ):
@@ -152,9 +164,7 @@ class Peer:
         self.channel_handler = channel_handler
         """Every time a new channel is created by peer (not by our), this handler will be called."""
 
-        self.turn_url = turn_url
-        self.turn_username = turn_username
-        self.turn_credential = turn_credential
+        self.turn_configs = turn_configs
         self.stun_url = stun_url
 
         self.waiting_sdps: Dict[str, asyncio.Queue] = {}
@@ -193,13 +203,10 @@ class Peer:
                             )
                             pc = RTCPeerConnection(
                                 configuration=RTCConfiguration(
-                                    [
-                                        RTCIceServer(self.stun_url),
-                                        RTCIceServer(
-                                            f"{self.turn_url}?transport=udp",
-                                            self.turn_username,
-                                            self.turn_credential,
-                                        ),
+                                    [RTCIceServer(self.stun_url)]
+                                    + [
+                                        config.to_ice_server()
+                                        for config in self.turn_configs
                                     ]
                                 )
                             )
@@ -248,14 +255,8 @@ class Peer:
         # establish connection
         pc = RTCPeerConnection(
             configuration=RTCConfiguration(
-                [
-                    RTCIceServer(self.stun_url),
-                    RTCIceServer(
-                        f"{self.turn_url}?transport=udp",
-                        self.turn_username,
-                        self.turn_credential,
-                    ),
-                ]
+                [RTCIceServer(self.stun_url)]
+                + [config.to_ice_server() for config in self.turn_configs]
             )
         )
         channel = pc.createDataChannel(
