@@ -57,7 +57,7 @@ class InwardDataChannel:
     def __init__(self, channel: RTCDataChannel):
         self._logger = logging.getLogger(__name__)
         self.channel = channel
-        self.hooks: Dict[str, Callable[[str], Coroutine[Any, Any, None]]] = {}
+        self.hooks: Dict[str, Callable[[Any], Coroutine[Any, Any, Any]]] = {}
         self.lock = asyncio.Lock()
 
         @channel.on("open")
@@ -70,8 +70,16 @@ class InwardDataChannel:
             message: ControlMessage = pickle.loads(message)
             async with self.lock:
                 callback = self.hooks.get(message.op)
+
+                async def handler(
+                    callback: Callable[[Any], Coroutine[Any, Any, Any]], data: Any
+                ):
+                    result = await callback(message.data)
+                    if result != None:
+                        self.send(result)
+
                 if callback is not None:
-                    asyncio.create_task(callback(message.data))
+                    asyncio.create_task(handler(callback, message.data))
                 else:
                     self._logger.warning("No hook for operation: %s", message.op)
 
@@ -82,7 +90,7 @@ class InwardDataChannel:
         self._logger.info("Channel %s sends message: %s", self.label(), message)
         self.channel.send(message)
 
-    async def on(self, hook: str, callback: Callable[[str], Coroutine[Any, Any, None]]):
+    async def on(self, hook: str, callback: Callable[[Any], Coroutine[Any, Any, Any]]):
         async with self.lock:
             self.hooks[hook] = callback
             self._logger.info("Hook %s added", hook)
@@ -92,9 +100,7 @@ class PeerConnection:
     def __init__(
         self,
         pc: RTCPeerConnection,
-        channel_handler: Callable[
-            [InwardDataChannel], Coroutine[Any, Any, None]
-        ] = None,
+        channel_handler: Callable[[InwardDataChannel], Coroutine[Any, Any, Any]] = None,
         out_channel: OutwardDataChannel | None = None,
     ):
         """
@@ -149,7 +155,7 @@ class Peer:
         signaling_url: str,
         turn_configs: List[TurnConfig],
         stun_url: str,
-        channel_handler: Callable[[InwardDataChannel], Coroutine[Any, Any, None]],
+        channel_handler: Callable[[InwardDataChannel], Coroutine[Any, Any, Any]],
     ):
         self._logger = logging.getLogger(__name__)
         self.worker_id = worker_id
