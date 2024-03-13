@@ -4,7 +4,7 @@ import pickle
 import websockets
 import logging
 import logging.config
-from typing import Any, Callable, Coroutine, Dict, List
+from typing import Any, Callable, Coroutine, Dict, List, Optional
 from peerrtc.messages import ControlMessage, RegisterMessage, ConnectMessage
 from aiortc import (
     RTCPeerConnection,
@@ -15,15 +15,18 @@ from aiortc import (
 
 
 @dataclass
-class TurnConfig:
+class IceConfig:
+    ty: str
     ip: str
     port: int
-    username: str
-    credential: str
+    username: Optional[str] = None
+    credential: Optional[str] = None
 
     def to_ice_server(self) -> RTCIceServer:
         return RTCIceServer(
-            f"turn:{self.ip}:{self.port}?transport=udp", self.username, self.credential
+            f"{self.ty}:{self.ip}:{self.port}?transport=udp",
+            self.username,
+            self.credential,
         )
 
 
@@ -101,7 +104,7 @@ class PeerConnection:
         self,
         pc: RTCPeerConnection,
         channel_handler: Callable[[InwardDataChannel], Coroutine[Any, Any, Any]] = None,
-        out_channel: OutwardDataChannel | None = None,
+        out_channel: Optional[OutwardDataChannel] = None,
     ):
         """
         Create a peer connection with given RTCPeerConnection and DataChannel.
@@ -126,7 +129,7 @@ class PeerConnection:
             await channel_handler(in_channel)
             self._logger.info("Data channel created: %s", in_channel.label())
 
-    async def create(self, label: str) -> OutwardDataChannel | None:
+    async def create(self, label: str) -> Optional[OutwardDataChannel]:
         """Create a data channel with given label."""
         async with self.lock:
             if label in self.out_channels:
@@ -153,8 +156,7 @@ class Peer:
         self,
         worker_id: str,
         signaling_url: str,
-        turn_configs: List[TurnConfig],
-        stun_url: str,
+        ice_configs: List[IceConfig],
         channel_handler: Callable[[InwardDataChannel], Coroutine[Any, Any, Any]],
     ):
         self._logger = logging.getLogger(__name__)
@@ -170,8 +172,7 @@ class Peer:
         self.channel_handler = channel_handler
         """Every time a new channel is created by peer (not by our), this handler will be called."""
 
-        self.turn_configs = turn_configs
-        self.stun_url = stun_url
+        self.ice_configs = ice_configs
 
         self.waiting_sdps: Dict[str, asyncio.Queue] = {}
         self.peer_conns: Dict[str, PeerConnection] = {}
@@ -209,10 +210,9 @@ class Peer:
                             )
                             pc = RTCPeerConnection(
                                 configuration=RTCConfiguration(
-                                    [RTCIceServer(self.stun_url)]
-                                    + [
+                                    [
                                         config.to_ice_server()
-                                        for config in self.turn_configs
+                                        for config in self.ice_configs
                                     ]
                                 )
                             )
@@ -239,7 +239,7 @@ class Peer:
 
     async def connect(
         self, to_worker_id: str, label: str
-    ) -> tuple[PeerConnection, OutwardDataChannel | None] | None:
+    ) -> Optional[tuple[PeerConnection, Optional[OutwardDataChannel]]]:
         """Please don't connect to the same worker simultaneously. It's not supported yet."""
 
         async with self.lock:
@@ -261,8 +261,7 @@ class Peer:
         # establish connection
         pc = RTCPeerConnection(
             configuration=RTCConfiguration(
-                [RTCIceServer(self.stun_url)]
-                + [config.to_ice_server() for config in self.turn_configs]
+                [config.to_ice_server() for config in self.turn_configs]
             )
         )
         channel = pc.createDataChannel(

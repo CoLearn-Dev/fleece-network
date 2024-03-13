@@ -6,7 +6,7 @@ import logging.config
 import aioconsole
 import time
 import pickle
-from peerrtc.peer import InwardDataChannel, Peer, TurnConfig
+from peerrtc.peer import InwardDataChannel, Peer, IceConfig
 from peerrtc.messages import ControlMessage
 
 logging.config.fileConfig("logging.conf")
@@ -82,8 +82,8 @@ async def main():
         signaling_url="{}:{}".format(
             config["signaling"]["ip"], config["signaling"]["port"]
         ),
-        turn_configs=[TurnConfig(**subconfig) for subconfig in config["turn"]],
-        stun_url="stun:{}:{}".format(config["stun"]["ip"], config["stun"]["port"]),
+        ice_configs=[IceConfig("turn", **subconfig) for subconfig in config["turn"]]
+        + [IceConfig("stun", **subconfig) for subconfig in config["stun"]],
         channel_handler=handler,
     )
 
