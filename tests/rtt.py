@@ -23,7 +23,7 @@ async def delegator(peer: Peer):
                 _, channel = await peer.connect(args[0], f"{peer.worker_id}_rtt")
             elif op == "send":
                 if channel is not None:
-                    channel.send(pickle.dumps(ControlMessage("rtt", time.time())))
+                    channel.send(ControlMessage("rtt", time.time()))
                     reply = pickle.loads(await channel.recv())
                     logger.info(time.time() - reply)
                 else:

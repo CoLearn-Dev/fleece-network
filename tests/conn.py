@@ -27,7 +27,7 @@ async def delegator(peer: Peer):
                 logger.info("New channel created")
             elif op == "send":
                 if channel is not None:
-                    channel.send(pickle.dumps(ControlMessage("hello", args[0])))
+                    channel.send(ControlMessage("hello", args[0]))
                 else:
                     logger.warning("No channel")
             else:

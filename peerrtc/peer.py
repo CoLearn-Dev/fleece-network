@@ -51,9 +51,9 @@ class OutwardDataChannel:
     async def recv(self):
         return await self.read_queue.get()
 
-    def send(self, message: str):
+    def send(self, message: ControlMessage):
         self._logger.info("Channel %s sends message: %s", self.label(), message)
-        self.channel.send(message)
+        self.channel.send(pickle.dumps(message))
 
 
 class InwardDataChannel:

@@ -44,7 +44,7 @@ async def delegator(peer: Peer, test: SpeedTest):
                 _, channel = await peer.connect(args[0], f"{peer.worker_id}_rtt")
             elif op == "send":
                 if channel is not None:
-                    channel.send(pickle.dumps(ControlMessage("rtt", "start")))
+                    channel.send(ControlMessage("rtt", "start"))
                     tosend = pickle.dumps(ControlMessage("rtt", content))
                     test.start()
 
