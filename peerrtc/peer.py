@@ -38,12 +38,18 @@ class OutwardDataChannel:
 
         @channel.on("open")
         async def on_open():
-            self._logger.info("Data channel opened: %s", self.label())
+            self._logger.info("Outward data channel opened: %s", self.label())
 
         @channel.on("message")
         async def on_message(message: str):
-            self._logger.info("Channel %s receives message: %s", self.label(), message)
+            self._logger.info(
+                "Outward data channel %s receives message: %s", self.label(), message
+            )
             await self.read_queue.put(message)
+
+        @channel.on("close")
+        async def on_close():
+            self._logger.warning("Outward data channel %s closes", self.label())
 
     def label(self) -> str:
         return self.channel.label
@@ -65,11 +71,13 @@ class InwardDataChannel:
 
         @channel.on("open")
         async def on_open():
-            self._logger.info("Data channel opened: %s", self.label())
+            self._logger.info("Inward data channel opened: %s", self.label())
 
         @channel.on("message")
         async def on_message(message: str):
-            self._logger.info("Channel %s receives message: %s", self.label(), message)
+            self._logger.info(
+                "Inward data channel %s receives message: %s", self.label(), message
+            )
             message: ControlMessage = pickle.loads(message)
             async with self.lock:
                 callback = self.hooks.get(message.op)
@@ -85,6 +93,10 @@ class InwardDataChannel:
                     asyncio.create_task(handler(callback, message.data))
                 else:
                     self._logger.warning("No hook for operation: %s", message.op)
+
+        @channel.on("close")
+        async def on_close():
+            self._logger.warning("Inward data channel %s closes", self.label())
 
     def label(self) -> str:
         return self.channel.label
@@ -104,6 +116,7 @@ class PeerConnection:
         self,
         pc: RTCPeerConnection,
         channel_handler: Callable[[InwardDataChannel], Coroutine[Any, Any, Any]] = None,
+        close_handler: Callable[[], Coroutine[Any, Any, Any]] = None,
         out_channel: Optional[OutwardDataChannel] = None,
     ):
         """
@@ -113,7 +126,8 @@ class PeerConnection:
         """
 
         self._logger = logging.getLogger(__name__)
-        self.pc = pc
+        self.inner = pc
+        self.fail_handler = close_handler
         self.in_channels: Dict[str, InwardDataChannel] = {}
         self.out_channels: Dict[str, OutwardDataChannel] = {}
         self.lock = asyncio.Lock()
@@ -129,6 +143,17 @@ class PeerConnection:
             await channel_handler(in_channel)
             self._logger.info("Data channel created: %s", in_channel.label())
 
+        @pc.on("iceconnectionstatechange")
+        async def on_iceconnectionstatechange():
+            self._logger.info(
+                "ICE connection state is changed to: %s", pc.iceConnectionState
+            )
+
+            if pc.iceConnectionState == "failed":
+                # We only need to do this when it's failed. Failed means that the connection is closed by the other peer.
+                # However, there is a huge latency between connection closed and the state changed to failed.
+                await self.fail_handler()
+
     async def create(self, label: str) -> Optional[OutwardDataChannel]:
         """Create a data channel with given label."""
         async with self.lock:
@@ -137,7 +162,7 @@ class PeerConnection:
             elif label in self.in_channels:
                 return None
             else:
-                out_channel = OutwardDataChannel(self.pc.createDataChannel(label))
+                out_channel = OutwardDataChannel(self.inner.createDataChannel(label))
                 self.out_channels[label] = out_channel
                 return out_channel
 
@@ -198,11 +223,10 @@ class Peer:
                         while True:
                             raw = await ws.recv()
                             message: ConnectMessage = pickle.loads(raw)
+                            from_worker_id = message.from_worker_id
                             if message.sdp.type == "answer":
                                 async with self.lock:
-                                    signal = self.waiting_sdps.pop(
-                                        message.from_worker_id, None
-                                    )
+                                    signal = self.waiting_sdps.pop(from_worker_id, None)
                                     if signal == None:
                                         self._logger.warning(
                                             "No signal queue for answer"
@@ -211,7 +235,7 @@ class Peer:
                                 await signal.put(message.sdp)
                             else:  # it's an offer
                                 self._logger.info(
-                                    "Received offer from %s", message.from_worker_id
+                                    "Received offer from %s", from_worker_id
                                 )
                                 pc = RTCPeerConnection(
                                     configuration=RTCConfiguration(
@@ -225,17 +249,23 @@ class Peer:
                                 await pc.setLocalDescription(await pc.createAnswer())
                                 answermsg = ConnectMessage(
                                     self.worker_id,
-                                    message.from_worker_id,
+                                    from_worker_id,
                                     pc.localDescription,
                                 )
                                 await ws.send(pickle.dumps(answermsg))
-                                self._logger.info(
-                                    "Sent answer to %s", message.from_worker_id
-                                )
+                                self._logger.info("Sent answer to %s", from_worker_id)
+
+                                async def pc_close():
+                                    async with self.lock:
+                                        self._logger.info(
+                                            "Connection to %s closed",
+                                            from_worker_id,
+                                        )
+                                        self.peer_conns.pop(from_worker_id)
 
                                 async with self.lock:
-                                    self.peer_conns[message.from_worker_id] = (
-                                        PeerConnection(pc, self.channel_handler)
+                                    self.peer_conns[from_worker_id] = PeerConnection(
+                                        pc, self.channel_handler, pc_close
                                     )
                     except websockets.exceptions.ConnectionClosed:
                         self._logger.info("Connection closed")
@@ -292,8 +322,22 @@ class Peer:
 
         self._logger.info("Connected to %s", to_worker_id)
 
+        async def pc_close():
+            async with self.lock:
+                self._logger.info("Connection to %s closed", to_worker_id)
+                self.peer_conns.pop(to_worker_id)
+
         async with self.lock:
             out_channel = OutwardDataChannel(channel)
-            new_pc = PeerConnection(pc, self.channel_handler, out_channel)
+            new_pc = PeerConnection(pc, self.channel_handler, pc_close, out_channel)
             self.peer_conns[to_worker_id] = new_pc
             return new_pc, out_channel
+
+    async def close(self, to_worker_id: str):
+        async with self.lock:
+            if to_worker_id in self.peer_conns:
+                pc = self.peer_conns.pop(to_worker_id)
+                await pc.inner.close()
+                self._logger.info("Connection to %s closed", to_worker_id)
+            else:
+                self._logger.warning("No connection to %s", to_worker_id)
