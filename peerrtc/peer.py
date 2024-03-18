@@ -261,7 +261,7 @@ class Peer:
         # establish connection
         pc = RTCPeerConnection(
             configuration=RTCConfiguration(
-                [config.to_ice_server() for config in self.turn_configs]
+                [config.to_ice_server() for config in self.ice_configs]
             )
         )
         channel = pc.createDataChannel(
