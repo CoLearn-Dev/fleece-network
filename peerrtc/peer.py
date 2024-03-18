@@ -182,60 +182,68 @@ class Peer:
 
     async def _register(self):
         while True:
-            async with websockets.connect(f"ws://{self.signaling_url}/register") as ws:
-                async with self.lock:
-                    self.ws = ws
-                self._logger.info("Connecting to signaling server")
-
-                # send register message first
-                await ws.send(pickle.dumps(RegisterMessage(self.worker_id)))
-                self._logger.info("Registering worker: %s", self.worker_id)
-
-                try:
-                    while True:
-                        raw = await ws.recv()
-                        message: ConnectMessage = pickle.loads(raw)
-                        if message.sdp.type == "answer":
-                            async with self.lock:
-                                signal = self.waiting_sdps.pop(
-                                    message.from_worker_id, None
-                                )
-                                if signal == None:
-                                    self._logger.warning("No signal queue for answer")
-                                    continue
-                            await signal.put(message.sdp)
-                        else:  # it's an offer
-                            self._logger.info(
-                                "Received offer from %s", message.from_worker_id
-                            )
-                            pc = RTCPeerConnection(
-                                configuration=RTCConfiguration(
-                                    [
-                                        config.to_ice_server()
-                                        for config in self.ice_configs
-                                    ]
-                                )
-                            )
-                            await pc.setRemoteDescription(message.sdp)
-                            await pc.setLocalDescription(await pc.createAnswer())
-                            answermsg = ConnectMessage(
-                                self.worker_id,
-                                message.from_worker_id,
-                                pc.localDescription,
-                            )
-                            await ws.send(pickle.dumps(answermsg))
-                            self._logger.info(
-                                "Sent answer to %s", message.from_worker_id
-                            )
-
-                            async with self.lock:
-                                self.peer_conns[message.from_worker_id] = (
-                                    PeerConnection(pc, self.channel_handler)
-                                )
-                except websockets.exceptions.ConnectionClosed:
-                    self._logger.info("Connection closed")
+            try:
+                async with websockets.connect(
+                    f"ws://{self.signaling_url}/register"
+                ) as ws:
                     async with self.lock:
-                        self.ws = None
+                        self.ws = ws
+                    self._logger.info("Connecting to signaling server")
+
+                    # send register message first
+                    await ws.send(pickle.dumps(RegisterMessage(self.worker_id)))
+                    self._logger.info("Registering worker: %s", self.worker_id)
+
+                    try:
+                        while True:
+                            raw = await ws.recv()
+                            message: ConnectMessage = pickle.loads(raw)
+                            if message.sdp.type == "answer":
+                                async with self.lock:
+                                    signal = self.waiting_sdps.pop(
+                                        message.from_worker_id, None
+                                    )
+                                    if signal == None:
+                                        self._logger.warning(
+                                            "No signal queue for answer"
+                                        )
+                                        continue
+                                await signal.put(message.sdp)
+                            else:  # it's an offer
+                                self._logger.info(
+                                    "Received offer from %s", message.from_worker_id
+                                )
+                                pc = RTCPeerConnection(
+                                    configuration=RTCConfiguration(
+                                        [
+                                            config.to_ice_server()
+                                            for config in self.ice_configs
+                                        ]
+                                    )
+                                )
+                                await pc.setRemoteDescription(message.sdp)
+                                await pc.setLocalDescription(await pc.createAnswer())
+                                answermsg = ConnectMessage(
+                                    self.worker_id,
+                                    message.from_worker_id,
+                                    pc.localDescription,
+                                )
+                                await ws.send(pickle.dumps(answermsg))
+                                self._logger.info(
+                                    "Sent answer to %s", message.from_worker_id
+                                )
+
+                                async with self.lock:
+                                    self.peer_conns[message.from_worker_id] = (
+                                        PeerConnection(pc, self.channel_handler)
+                                    )
+                    except websockets.exceptions.ConnectionClosed:
+                        self._logger.info("Connection closed")
+                        async with self.lock:
+                            self.ws = None
+            except Exception as e:
+                self._logger.warn("Failed to connect to signaling server due to %s", e)
+                await asyncio.sleep(1)
 
     async def connect(
         self, to_worker_id: str, label: str
