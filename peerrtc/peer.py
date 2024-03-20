@@ -1,6 +1,7 @@
+import inspect
 import anyio
 import asyncio
-from anyio import create_memory_object_stream
+from anyio import create_memory_object_stream, to_thread
 from dataclasses import dataclass
 import logging
 import pickle
@@ -87,7 +88,11 @@ class InwardDataChannel:
     def __init__(
         self,
         channel: RTCDataChannel,
-        hooks: dict[str, Callable[[Any], Coroutine[Any, Any, tuple[str, Any]]]],
+        hooks: dict[
+            str,
+            Callable[[Any], Coroutine[Any, Any, tuple[str, Any]]]
+            | Callable[[Any], tuple[str, Any]],
+        ],
     ):
         self._logger = logging.getLogger(self.__class__.__name__)
         self.channel = channel
@@ -106,15 +111,25 @@ class InwardDataChannel:
 
             callback = self.hooks.get(message.op)
 
-            async def handler(
+            async def ahandler(
                 callback: Callable[[Any], Coroutine[Any, Any, tuple[str, Any]]]
             ):
                 status, result = await callback(message.data)
                 if result != None:
                     self.send(pickle.dumps(SimpleReply(status, result)))
 
+            def handler(callback: Callable[[Any], tuple[str, Any]]):
+                status, result = callback(message.data)
+                if result != None:
+                    self.send(pickle.dumps(SimpleReply(status, result)))
+
             if callback is not None:
-                await handler(callback)
+                if asyncio.iscoroutinefunction(callback):
+                    await ahandler(callback)
+                elif inspect.isfunction(callback):
+                    await to_thread.run_sync(handler, callback)
+                else:
+                    raise ValueError("Invalid callback type")
             else:
                 self._logger.warning("No hook for operation: %s", message.op)
 
@@ -142,7 +157,11 @@ class PeerConnection:
         from_id: str,
         to_id: str,
         configs: list[IceConfig],
-        hooks: dict[str, Callable[[Any], Coroutine[Any, Any, tuple[str, Any]]]],
+        hooks: dict[
+            str,
+            Callable[[Any], Coroutine[Any, Any, tuple[str, Any]]]
+            | Callable[[Any], tuple[str, Any]],
+        ],
     ):
         self._logger = logging.getLogger(self.__class__.__name__)
         self.from_id = from_id
@@ -310,7 +329,7 @@ class Peer:
         worker_id: str,
         signaling_url: str,
         ice_configs: list[IceConfig],
-        hooks: dict[str, Callable[[Any], Coroutine[Any, Any, tuple[str, Any]]]],
+        hooks: dict[str, Callable[[Any], Coroutine[Any, Any, tuple[str, Any]]] | Callable[[Any], tuple[str, Any]]]
     ):
 
         self._logger = logging.getLogger(self.__class__.__name__)
