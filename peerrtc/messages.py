@@ -1,21 +1,42 @@
 from dataclasses import dataclass
-from typing import Any, Dict
-from aiortc import RTCSessionDescription
+from typing import Any, Generic, Optional, TypeVar
+from aiortc import RTCSessionDescription  # type: ignore
 
 
 @dataclass
-class RegisterMessage:
+class RegisterRequest:
     worker_id: str
 
 
 @dataclass
-class ConnectMessage:
+class RegisterReply:
+    status: str
+
+
+@dataclass
+class ConnectRequest:
     from_worker_id: str
     to_worker_id: str
     sdp: RTCSessionDescription
 
 
 @dataclass
-class ControlMessage:
+class ConnectReply:
+    from_worker_id: str
+    to_worker_id: str
+    sdp: Optional[RTCSessionDescription]
+
+
+T = TypeVar("T")
+
+
+@dataclass
+class SimpleRequest(Generic[T]):
     op: str
-    data: Any
+    data: T
+
+
+@dataclass
+class SimpleReply(Generic[T]):
+    status: str
+    data: T

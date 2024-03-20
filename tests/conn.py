@@ -1,33 +1,26 @@
 import logging
 import logging.config
-import asyncio
-import pickle
+import anyio
 import toml
-import aioconsole
-from peerrtc.peer import InwardDataChannel, Peer, IceConfig
-from peerrtc.messages import ControlMessage
+import aioconsole  # type: ignore
 
 logging.config.fileConfig("logging.conf")
 logger = logging.getLogger(__name__)
 
+from peerrtc.peer import IceConfig, Peer
+
 
 async def delegator(peer: Peer):
     peer_conn = None
-    channel = None
     while True:
         try:
             input: str = await aioconsole.ainput()
             op, *args = input.split(" ")
             if op == "connect":
-                peer_conn, channel = await peer.connect(
-                    args[0], f"{peer.worker_id}_hook"
-                )
-            elif op == "new":
-                channel = await peer_conn.create(f"{peer.worker_id}_{args[0]}")
-                logger.info("New channel created")
+                peer_conn = await peer.connect(args[0])
             elif op == "send":
-                if channel is not None:
-                    channel.send(ControlMessage("hello", args[0]))
+                if peer_conn is not None:
+                    await peer_conn.send("hello", args[0])
                 else:
                     logger.warning("No channel")
             else:
@@ -39,11 +32,11 @@ async def delegator(peer: Peer):
 async def main():
     config = toml.load("config.toml")
 
-    async def handler(channel: InwardDataChannel):
-        async def cat(data):
-            logger.info(data)
+    async def cat(data):
+        logger.info(data)
+        return "ok", None
 
-        await channel.on("hello", cat)
+    hooks = {"hello": cat}
 
     try:
         peer = Peer(
@@ -51,9 +44,9 @@ async def main():
             signaling_url="{}:{}".format(
                 config["signaling"]["ip"], config["signaling"]["port"]
             ),
-            icw_configs=[IceConfig("turn", **subconfig) for subconfig in config["turn"]]
+            ice_configs=[IceConfig("turn", **subconfig) for subconfig in config["turn"]]
             + [IceConfig("stun", **subconfig) for subconfig in config["stun"]],
-            channel_handler=handler,
+            hooks=hooks,
         )
     except Exception as e:
         logger.warning("Exception: %s", e)
@@ -62,4 +55,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    anyio.run(main)

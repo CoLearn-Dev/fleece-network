@@ -4,7 +4,12 @@ import logging
 import pickle
 from typing import Dict
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from peerrtc.messages import ConnectMessage, RegisterMessage
+from peerrtc.messages import (
+    ConnectReply,
+    ConnectRequest,
+    RegisterReply,
+    RegisterRequest,
+)
 
 
 class Signaling:
@@ -20,15 +25,18 @@ logger = logging.getLogger("uvicorn.error")
 @app.websocket("/register")
 async def register(socket: WebSocket):
     await socket.accept()
-    reg: RegisterMessage = pickle.loads(await socket.receive_bytes())
+    reg: RegisterRequest = pickle.loads(await socket.receive_bytes())
     logger.info("Registering worker: %s", reg.worker_id)
 
     signaling.workers[reg.worker_id] = socket
 
+    # reply for acknowledgement
+    await socket.send_bytes(pickle.dumps(RegisterReply("ok")))
+
     try:
         while True:
             raw = await socket.receive_bytes()
-            message: ConnectMessage = pickle.loads(raw)
+            message = pickle.loads(raw)
             logger.info(
                 "Receiving message from %s, sending to %s",
                 message.from_worker_id,
@@ -36,11 +44,23 @@ async def register(socket: WebSocket):
             )
             async with signaling.lock:
                 worker = signaling.workers.get(message.to_worker_id)
-                if worker != None:
-                    await worker.send_bytes(raw)
+                if worker is not None:
+                    asyncio.create_task(worker.send_bytes(raw))
                 else:
-                    logger.warn("No worker")
-                    pass
+                    logger.warning("No worker")
+                    if isinstance(message, ConnectRequest):
+                        asyncio.create_task(
+                            socket.send_bytes(
+                                pickle.dumps(
+                                    ConnectReply(
+                                        message.to_worker_id,
+                                        message.from_worker_id,
+                                        None,
+                                    )
+                                )
+                            )
+                        )
+
     except WebSocketDisconnect:
         async with signaling.lock:
             signaling.workers.pop(reg.worker_id)

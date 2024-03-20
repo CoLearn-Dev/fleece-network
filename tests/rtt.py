@@ -3,11 +3,9 @@ from typing import Any
 import toml
 import logging
 import logging.config
-import aioconsole
+import aioconsole  # type: ignore
 import time
-import pickle
-from peerrtc.peer import InwardDataChannel, Peer, IceConfig
-from peerrtc.messages import ControlMessage
+from peerrtc.peer import Peer, IceConfig
 
 logging.config.fileConfig("logging.conf")
 logger = logging.getLogger(__name__)
@@ -20,12 +18,14 @@ async def delegator(peer: Peer):
             input: str = await aioconsole.ainput()
             op, *args = input.split(" ")
             if op == "connect":
-                _, channel = await peer.connect(args[0], f"{peer.worker_id}_rtt")
+                channel = await peer.connect(args[0])
             elif op == "send":
                 if channel is not None:
-                    channel.send(ControlMessage("rtt", time.time()))
-                    reply = pickle.loads(await channel.recv())
-                    logger.info(time.time() - reply)
+                    await channel.send("rtt", time.time())
+                    reply = await channel.recv()
+                    if reply is not None:
+                        _, otime = reply
+                        logger.info(time.time() - otime)
                 else:
                     logger.warning("No channel")
             else:
@@ -37,14 +37,8 @@ async def delegator(peer: Peer):
 async def main():
     config = toml.load("config.toml")
 
-    async def handler(channel: InwardDataChannel):
-        async def echo(data: Any):
-            try:
-                channel.send(pickle.dumps(data))
-            except Exception as e:
-                logger.warn("Get exception when handling: %s", e)
-
-        await channel.on("rtt", echo)
+    async def echo(data: Any):
+        return "ok", data
 
     peer = Peer(
         worker_id=config["worker"]["id"],
@@ -53,7 +47,7 @@ async def main():
         ),
         ice_configs=[IceConfig("turn", **subconfig) for subconfig in config["turn"]]
         + [IceConfig("stun", **subconfig) for subconfig in config["stun"]],
-        channel_handler=handler,
+        hooks={"rtt": echo},
     )
 
     await delegator(peer)

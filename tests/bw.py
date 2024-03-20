@@ -3,11 +3,9 @@ from typing import Any
 import toml
 import logging
 import logging.config
-import aioconsole
+import aioconsole  # type: ignore
 import time
-import pickle
-from peerrtc.peer import InwardDataChannel, Peer, IceConfig
-from peerrtc.messages import ControlMessage
+from peerrtc.peer import Peer, IceConfig
 
 logging.config.fileConfig("logging.conf")
 logger = logging.getLogger(__name__)
@@ -41,18 +39,17 @@ async def delegator(peer: Peer, test: SpeedTest):
             input: str = await aioconsole.ainput()
             op, *args = input.split(" ")
             if op == "connect":
-                _, channel = await peer.connect(args[0], f"{peer.worker_id}_rtt")
+                channel = await peer.connect(args[0])
             elif op == "send":
                 if channel is not None:
-                    channel.send(ControlMessage("rtt", "start"))
-                    tosend = pickle.dumps(ControlMessage("rtt", content))
+                    await channel.send("rtt", "start")
                     test.start()
 
                     for _ in range(100):
-                        channel.send(tosend)
+                        await channel.send("rtt", content)
                         test.go(size)
 
-                    channel.send(pickle.dumps(ControlMessage("rtt", "end")))
+                    await channel.send("rtt", "end")
                     logger.warning("Bandwidth: %s MB/s", test.end() / 1024 / 1024)
                 else:
                     logger.warning("No channel")
@@ -66,16 +63,14 @@ async def main():
     config = toml.load("config.toml")
     test = SpeedTest()
 
-    async def handler(channel: InwardDataChannel):
-        async def sum(data: Any):
-            if data == "start":
-                test.start()
-            elif data == "end":
-                logger.warning("Bandwidth: %s MB/s", test.end() / 1024 / 1024)
-            else:
-                test.go(size)
-
-        await channel.on("rtt", sum)
+    async def sum(data: Any):
+        if data == "start":
+            test.start()
+        elif data == "end":
+            logger.warning("Bandwidth: %s MB/s", test.end() / 1024 / 1024)
+        else:
+            test.go(size)
+        return "ok", None
 
     peer = Peer(
         worker_id=config["worker"]["id"],
@@ -84,7 +79,7 @@ async def main():
         ),
         ice_configs=[IceConfig("turn", **subconfig) for subconfig in config["turn"]]
         + [IceConfig("stun", **subconfig) for subconfig in config["stun"]],
-        channel_handler=handler,
+        hooks={"rtt": sum},
     )
 
     await delegator(peer, test)
