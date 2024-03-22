@@ -1,7 +1,7 @@
 import inspect
 import anyio
 import asyncio
-from anyio import create_memory_object_stream, to_thread
+from anyio import create_memory_object_stream, to_thread, from_thread
 from dataclasses import dataclass
 import logging
 import pickle
@@ -26,22 +26,6 @@ from peerrtc.messages import (
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
-
-
-@dataclass
-class IceConfig:
-    ty: str
-    ip: str
-    port: int
-    username: Optional[str] = None
-    credential: Optional[str] = None
-
-    def to_ice_server(self) -> RTCIceServer:
-        return RTCIceServer(
-            f"{self.ty}:{self.ip}:{self.port}?transport=udp",  # currently, udp is better supported
-            self.username,
-            self.credential,
-        )
 
 
 class OutwardDataChannel:
@@ -124,7 +108,7 @@ class InwardDataChannel:
                     self.send(pickle.dumps(SimpleReply(status, result)))
 
             if callback is not None:
-                if asyncio.iscoroutinefunction(callback):
+                if inspect.iscoroutinefunction(callback):
                     await ahandler(callback)
                 elif inspect.isfunction(callback):
                     await to_thread.run_sync(handler, callback)
@@ -156,7 +140,7 @@ class PeerConnection:
         self,
         from_id: str,
         to_id: str,
-        configs: list[IceConfig],
+        configs: list[tuple[str, Optional[str], Optional[str]]],
         hooks: dict[
             str,
             Callable[[Any], Coroutine[Any, Any, tuple[str, Any]]]
@@ -186,7 +170,7 @@ class PeerConnection:
 
     async def _init_inner(self) -> RTCPeerConnection:
         pc = RTCPeerConnection(
-            RTCConfiguration([config.to_ice_server() for config in self.configs])
+            RTCConfiguration([RTCIceServer(**config) for config in self.configs])
         )
         self.out_channel = OutwardDataChannel(pc.createDataChannel(self.from_id))
         self.inner = pc
@@ -328,8 +312,12 @@ class Peer:
         self,
         worker_id: str,
         signaling_url: str,
-        ice_configs: list[IceConfig],
-        hooks: dict[str, Callable[[Any], Coroutine[Any, Any, tuple[str, Any]]] | Callable[[Any], tuple[str, Any]]]
+        ice_configs: list[tuple[str, Optional[str], Optional[str]]],
+        hooks: dict[
+            str,
+            Callable[[Any], Coroutine[Any, Any, tuple[str, Any]]]
+            | Callable[[Any], tuple[str, Any]],
+        ],
     ):
 
         self._logger = logging.getLogger(self.__class__.__name__)
@@ -400,6 +388,7 @@ class Peer:
                                 asyncio.create_task(self._answer(ws, message))
                             elif isinstance(message, ConnectReply):
                                 asyncio.create_task(self._resolve(message))
+
                                 pass
                             else:
                                 self._logger.error(

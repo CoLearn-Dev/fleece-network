@@ -5,7 +5,7 @@ import logging
 import logging.config
 import aioconsole  # type: ignore
 import time
-from peerrtc.peer import Peer, IceConfig
+from peerrtc.peer import Peer
 
 logging.config.fileConfig("logging.conf")
 logger = logging.getLogger(__name__)
@@ -45,8 +45,18 @@ async def main():
         signaling_url="{}:{}".format(
             config["signaling"]["ip"], config["signaling"]["port"]
         ),
-        ice_configs=[IceConfig("turn", **subconfig) for subconfig in config["turn"]]
-        + [IceConfig("stun", **subconfig) for subconfig in config["stun"]],
+        ice_configs=[
+            (
+                f"turn:{subconfig['ip']}:{subconfig['port']}",
+                subconfig["username"],
+                subconfig["credential"],
+            )
+            for subconfig in config["turn"]
+        ]
+        + [
+            (f"turn:{subconfig['ip']}:{subconfig['port']}", None, None)
+            for subconfig in config["stun"]
+        ],
         hooks={"rtt": echo},
     )
 

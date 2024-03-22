@@ -7,7 +7,7 @@ import aioconsole  # type: ignore
 logging.config.fileConfig("logging.conf")
 logger = logging.getLogger(__name__)
 
-from peerrtc.peer import IceConfig, Peer
+from peerrtc.peer import Peer
 
 
 async def delegator(peer: Peer):
@@ -44,8 +44,18 @@ async def main():
             signaling_url="{}:{}".format(
                 config["signaling"]["ip"], config["signaling"]["port"]
             ),
-            ice_configs=[IceConfig("turn", **subconfig) for subconfig in config["turn"]]
-            + [IceConfig("stun", **subconfig) for subconfig in config["stun"]],
+            ice_configs=[
+                (
+                    f"turn:{subconfig['ip']}:{subconfig['port']}",
+                    subconfig["username"],
+                    subconfig["credential"],
+                )
+                for subconfig in config["turn"]
+            ]
+            + [
+                (f"turn:{subconfig['ip']}:{subconfig['port']}", None, None)
+                for subconfig in config["stun"]
+            ],
             hooks=hooks,
         )
     except Exception as e:
