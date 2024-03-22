@@ -363,9 +363,7 @@ class Peer:
     async def _register(self):
         while True:
             try:
-                async with websockets.connect(
-                    f"ws://{self.signaling_url}/register"
-                ) as ws:
+                async with websockets.connect(f"{self.signaling_url}/register") as ws:
                     # send register message first
                     await ws.send(pickle.dumps(RegisterRequest(self.worker_id)))
                     self._logger.info("Registering worker: %s", self.worker_id)
