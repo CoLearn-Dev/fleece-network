@@ -1,8 +1,7 @@
 import inspect
 import anyio
-import asyncio
-from anyio import create_memory_object_stream, to_thread, from_thread
-from dataclasses import dataclass
+from anyio import create_memory_object_stream, to_thread
+from anyio.abc import TaskGroup
 import logging
 import pickle
 from typing import Any, Callable, Coroutine, Generic, Optional, TypeVar
@@ -310,6 +309,7 @@ class PeerConnection:
 class Peer:
     def __init__(
         self,
+        tg: TaskGroup,
         worker_id: str,
         signaling_url: str,
         ice_configs: list[tuple[str, Optional[str], Optional[str]]],
@@ -333,12 +333,14 @@ class Peer:
         self.hooks = hooks
         """Every time a new channel is created by peer (not by our), this handler will be called."""
 
+        self.tg = tg
+
         self.ice_configs = ice_configs
 
         self.conns: dict[str, PeerConnection] = {}
         self.lock = anyio.Lock()
 
-        asyncio.create_task(self._register())
+        self.tg.start_soon(self._register)
 
     async def _answer(
         self, ws: websockets.WebSocketClientProtocol, request: ConnectRequest
@@ -382,10 +384,11 @@ class Peer:
                         if isinstance(raw, bytes):
                             message = pickle.loads(raw)
 
+                            # TODO: determine whether use worker thread
                             if isinstance(message, ConnectRequest):
-                                asyncio.create_task(self._answer(ws, message))
+                                self.tg.start_soon(self._answer, ws, message)
                             elif isinstance(message, ConnectReply):
-                                asyncio.create_task(self._resolve(message))
+                                self.tg.start_soon(self._resolve, message)
 
                                 pass
                             else:
