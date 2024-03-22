@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Any, Generic, Optional, TypeVar
 from aiortc import RTCSessionDescription  # type: ignore
+from pydantic import BaseModel  # type: ignore
 
 
 @dataclass
@@ -27,7 +28,7 @@ class ConnectReply:
     sdp: Optional[RTCSessionDescription]
 
 
-T = TypeVar("T")
+T = TypeVar("T", bound=BaseModel)
 
 
 @dataclass

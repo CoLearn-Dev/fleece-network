@@ -4,7 +4,7 @@ from anyio import create_memory_object_stream, to_thread
 from anyio.abc import TaskGroup
 import logging
 import pickle
-from typing import Any, Callable, Coroutine, Generic, Optional, TypeVar
+from typing import Any, Callable, Coroutine, Optional, TypeVar
 from aiortc import (  # type: ignore
     RTCPeerConnection,
     RTCConfiguration,
@@ -12,6 +12,7 @@ from aiortc import (  # type: ignore
     RTCDataChannel,
     RTCSessionDescription,
 )
+from pydantic import BaseModel, validate_call
 import websockets
 
 from peerrtc.messages import (
@@ -24,7 +25,8 @@ from peerrtc.messages import (
 
 logger = logging.getLogger(__name__)
 
-T = TypeVar("T")
+P = TypeVar("P", bound=BaseModel)
+R = TypeVar("R", bound=BaseModel)
 
 
 class OutwardDataChannel:
@@ -54,10 +56,10 @@ class OutwardDataChannel:
     def label(self) -> str:
         return self.channel.label
 
-    async def recv(self) -> tuple[str, Any]:
+    async def recv(self) -> tuple[str, P]:
         return await self.recv_stream.receive()
 
-    def send(self, op: str, data: Any):
+    def send(self, op: str, data: P):
         self._logger.info(
             "Outward data channel %s sends message: %s %s", self.label(), op, data
         )
@@ -73,8 +75,8 @@ class InwardDataChannel:
         channel: RTCDataChannel,
         hooks: dict[
             str,
-            Callable[[Any], Coroutine[Any, Any, tuple[str, Any]]]
-            | Callable[[Any], tuple[str, Any]],
+            Callable[[P], Coroutine[Any, Any, tuple[str, R]]]
+            | Callable[[P], tuple[str, R]],
         ],
     ):
         self._logger = logging.getLogger(self.__class__.__name__)
@@ -95,14 +97,22 @@ class InwardDataChannel:
             callback = self.hooks.get(message.op)
 
             async def ahandler(
-                callback: Callable[[Any], Coroutine[Any, Any, tuple[str, Any]]]
+                callback: Callable[[P], Coroutine[Any, Any, tuple[str, R]]]
             ):
-                status, result = await callback(message.data)
+                @validate_call
+                async def vcallback(data: P):
+                    return await callback(data)
+
+                status, result = await vcallback(message.data)
                 if result != None:
                     self.send(pickle.dumps(SimpleReply(status, result)))
 
-            def handler(callback: Callable[[Any], tuple[str, Any]]):
-                status, result = callback(message.data)
+            def handler(callback: Callable[[P], tuple[str, R]]):
+                @validate_call
+                def vcallback(data: P):
+                    return callback(data)
+
+                status, result = vcallback(message.data)
                 if result != None:
                     self.send(pickle.dumps(SimpleReply(status, result)))
 
@@ -142,8 +152,8 @@ class PeerConnection:
         configs: list[tuple[str, Optional[str], Optional[str]]],
         hooks: dict[
             str,
-            Callable[[Any], Coroutine[Any, Any, tuple[str, Any]]]
-            | Callable[[Any], tuple[str, Any]],
+            Callable[[P], Coroutine[Any, Any, tuple[str, R]]]
+            | Callable[[P], tuple[str, R]],
         ],
     ):
         self._logger = logging.getLogger(self.__class__.__name__)
@@ -282,7 +292,7 @@ class PeerConnection:
     async def send(
         self,
         op: str,
-        data: T,
+        data: P,
     ):
         while True:
             async with self.condition:
@@ -315,8 +325,8 @@ class Peer:
         ice_configs: list[tuple[str, Optional[str], Optional[str]]],
         hooks: dict[
             str,
-            Callable[[Any], Coroutine[Any, Any, tuple[str, Any]]]
-            | Callable[[Any], tuple[str, Any]],
+            Callable[[P], Coroutine[Any, Any, tuple[str, R]]]
+            | Callable[[P], tuple[str, R]],
         ],
     ):
 
