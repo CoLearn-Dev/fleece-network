@@ -179,7 +179,12 @@ class PeerConnection:
 
     async def _init_inner(self) -> RTCPeerConnection:
         pc = RTCPeerConnection(
-            RTCConfiguration([RTCIceServer(**config) for config in self.configs])
+            RTCConfiguration(
+                [
+                    RTCIceServer(config[0], config[1], config[2])
+                    for config in self.configs
+                ]
+            )
         )
         self.out_channel = OutwardDataChannel(pc.createDataChannel(self.from_id))
         self.inner = pc
