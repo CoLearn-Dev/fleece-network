@@ -1,6 +1,6 @@
 import inspect
 import anyio
-from anyio import create_memory_object_stream, to_thread
+from anyio import Event, create_memory_object_stream, to_thread
 from anyio.abc import TaskGroup
 import logging
 import pickle
@@ -36,9 +36,11 @@ class OutwardDataChannel:
         self.send_stream, self.recv_stream = create_memory_object_stream[
             tuple[str, Any]
         ]()
+        self.isopen = Event()
 
         @channel.on("open")
-        async def on_open():
+        def on_open():
+            self.isopen.set()
             self._logger.info("Outward data channel %s opens", self.label())
 
         @channel.on("message")
@@ -59,11 +61,12 @@ class OutwardDataChannel:
     async def recv(self) -> tuple[str, P]:
         return await self.recv_stream.receive()
 
-    def send(self, op: str, data: P):
+    async def send(self, op: str, data: P):
+        await self.isopen.wait()
+        self.channel.send(pickle.dumps(SimpleRequest(op, data)))
         self._logger.info(
             "Outward data channel %s sends message: %s %s", self.label(), op, data
         )
-        self.channel.send(pickle.dumps(SimpleRequest(op, data)))
 
     def close(self):
         self.channel.close()
@@ -304,7 +307,7 @@ class PeerConnection:
                 if self.state == PeerConnection.State.CONNECTED:
                     if self.out_channel is not None:
                         self._logger.info("Sending message: %s", op)
-                        self.out_channel.send(op, data)
+                        await self.out_channel.send(op, data)
                         return
                     else:
                         self._logger.error(
