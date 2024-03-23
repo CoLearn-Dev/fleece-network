@@ -108,22 +108,22 @@ class InwardDataChannel:
 
                 status, result = await vcallback(message.data)
                 if result != None:
-                    self.send(pickle.dumps(SimpleReply(status, result)))
+                    await self.send(pickle.dumps(SimpleReply(status, result)))
 
-            def handler(callback: Callable[[P], tuple[str, R]]):
+            async def handler(callback: Callable[[P], tuple[str, R]]):
                 @validate_call
-                def vcallback(data: P):
-                    return callback(data)
+                async def vcallback(data: P):
+                    return await to_thread.run_sync(callback, data)
 
-                status, result = vcallback(message.data)
+                status, result = await vcallback(message.data)
                 if result != None:
-                    self.send(pickle.dumps(SimpleReply(status, result)))
+                    await self.send(pickle.dumps(SimpleReply(status, result)))
 
             if callback is not None:
                 if inspect.iscoroutinefunction(callback):
                     await ahandler(callback)
                 elif inspect.isfunction(callback):
-                    await to_thread.run_sync(handler, callback)
+                    await handler(callback)
                 else:
                     raise ValueError("Invalid callback type")
             else:
@@ -136,7 +136,9 @@ class InwardDataChannel:
     def label(self) -> str:
         return self.channel.label
 
-    def send(self, message: bytes):
+    async def send(self, message: bytes):
+        """Although it's not an async function, it requires the existence of an event loop."""
+
         self._logger.info("Channel %s sends message: %s", self.label(), message)
         self.channel.send(message)
 
