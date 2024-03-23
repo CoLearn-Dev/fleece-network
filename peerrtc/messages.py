@@ -33,11 +33,13 @@ T = TypeVar("T", bound=BaseModel)
 
 @dataclass
 class SimpleRequest(Generic[T]):
+    id: int
     op: str
     data: T
 
 
 @dataclass
 class SimpleReply(Generic[T]):
+    id: int
     status: str
     data: T
