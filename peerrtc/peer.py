@@ -102,20 +102,12 @@ class InwardDataChannel:
             async def ahandler(
                 callback: Callable[[P], Coroutine[Any, Any, tuple[str, R]]]
             ):
-                @validate_call
-                async def vcallback(data: P):
-                    return await callback(data)
-
-                status, result = await vcallback(message.data)
+                status, result = await callback(message.data)
                 if result != None:
                     await self.send(pickle.dumps(SimpleReply(status, result)))
 
             async def handler(callback: Callable[[P], tuple[str, R]]):
-                @validate_call
-                async def vcallback(data: P):
-                    return await to_thread.run_sync(callback, data)
-
-                status, result = await vcallback(message.data)
+                status, result = await to_thread.run_sync(callback, message.data)
                 if result != None:
                     await self.send(pickle.dumps(SimpleReply(status, result)))
 
@@ -350,7 +342,7 @@ class Peer:
         self.ws: Optional[websockets.WebSocketClientProtocol] = None
         """The websocket connection to the signaling server. Use to send offer."""
 
-        self.hooks = hooks
+        self.hooks = {name: validate_call(hook) for name, hook in hooks.items()}
         """Every time a new channel is created by peer (not by our), this handler will be called."""
 
         self.tg = tg
