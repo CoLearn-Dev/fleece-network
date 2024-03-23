@@ -1,10 +1,12 @@
+from abc import ABC, abstractmethod
 import inspect
 import anyio
 from anyio import Event, create_memory_object_stream, to_thread
 from anyio.abc import TaskGroup
+from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 import logging
 import pickle
-from typing import Any, Callable, Coroutine, Optional, TypeVar
+from typing import Any, Callable, Coroutine, Generic, Optional, TypeVar
 from aiortc import (  # type: ignore
     RTCPeerConnection,
     RTCConfiguration,
@@ -29,7 +31,76 @@ P = TypeVar("P", bound=BaseModel)
 R = TypeVar("R", bound=BaseModel)
 
 
-class OutwardDataChannel:
+class Outward(ABC, Generic[P, R]):
+    @abstractmethod
+    def label(self) -> str:
+        pass
+
+    @abstractmethod
+    async def recv(self) -> tuple[str, R]:
+        pass
+
+    @abstractmethod
+    async def send(self, op: str, data: P):
+        pass
+
+    @abstractmethod
+    def close(self):
+        pass
+
+
+class Inward(ABC, Generic[P, R]):
+    def __init__(
+        self,
+        hooks: dict[
+            str,
+            Callable[[P], Coroutine[Any, Any, tuple[str, R]]]
+            | Callable[[P], tuple[str, R]],
+        ],
+    ):
+        self.hooks = hooks
+
+    @abstractmethod
+    def label(self) -> str:
+        pass
+
+    @abstractmethod
+    async def _send(self, status: str, result: R):
+        pass
+
+    async def handle(self, op: str, data: P):
+        callback = self.hooks.get(op)
+
+        async def ahandler(callback: Callable[[P], Coroutine[Any, Any, tuple[str, R]]]):
+            status, result = await callback(data)
+            if result != None:
+                await self._send(status, result)
+
+        async def handler(callback: Callable[[P], tuple[str, R]]):
+            status, result = await to_thread.run_sync(callback, data)
+            if result != None:
+                await self._send(status, result)
+
+        if callback is not None:
+            if inspect.iscoroutinefunction(callback):
+                await ahandler(callback)
+            elif inspect.isfunction(callback):
+                await handler(callback)
+            else:
+                raise ValueError("Invalid callback type")
+
+
+class Connection(ABC):
+    @abstractmethod
+    async def send(self, op: str, data: P):
+        pass
+
+    @abstractmethod
+    async def recv(self) -> Optional[tuple[str, Any]]:
+        pass
+
+
+class OutwardDataChannel(Outward):
     def __init__(self, channel: RTCDataChannel):
         self._logger = logging.getLogger(self.__class__.__name__)
         self.channel = channel
@@ -58,7 +129,7 @@ class OutwardDataChannel:
     def label(self) -> str:
         return self.channel.label
 
-    async def recv(self) -> tuple[str, P]:
+    async def recv(self) -> tuple[str, R]:
         return await self.recv_stream.receive()
 
     async def send(self, op: str, data: P):
@@ -72,7 +143,7 @@ class OutwardDataChannel:
         self.channel.close()
 
 
-class InwardDataChannel:
+class InwardDataChannel(Inward):
     def __init__(
         self,
         channel: RTCDataChannel,
@@ -82,9 +153,9 @@ class InwardDataChannel:
             | Callable[[P], tuple[str, R]],
         ],
     ):
+        super().__init__(hooks)
         self._logger = logging.getLogger(self.__class__.__name__)
         self.channel = channel
-        self.hooks = hooks
 
         @channel.on("open")
         async def on_open():
@@ -93,33 +164,7 @@ class InwardDataChannel:
         @channel.on("message")
         async def on_message(raw: bytes):
             message: SimpleRequest = pickle.loads(raw)
-            self._logger.info(
-                "Inward data channel %s receives message: %s", self.label(), message
-            )
-
-            callback = self.hooks.get(message.op)
-
-            async def ahandler(
-                callback: Callable[[P], Coroutine[Any, Any, tuple[str, R]]]
-            ):
-                status, result = await callback(message.data)
-                if result != None:
-                    await self.send(pickle.dumps(SimpleReply(status, result)))
-
-            async def handler(callback: Callable[[P], tuple[str, R]]):
-                status, result = await to_thread.run_sync(callback, message.data)
-                if result != None:
-                    await self.send(pickle.dumps(SimpleReply(status, result)))
-
-            if callback is not None:
-                if inspect.iscoroutinefunction(callback):
-                    await ahandler(callback)
-                elif inspect.isfunction(callback):
-                    await handler(callback)
-                else:
-                    raise ValueError("Invalid callback type")
-            else:
-                self._logger.warning("No hook for operation: %s", message.op)
+            await self.handle(message.op, message.data)
 
         @channel.on("close")
         async def on_close():
@@ -128,14 +173,82 @@ class InwardDataChannel:
     def label(self) -> str:
         return self.channel.label
 
-    async def send(self, message: bytes):
+    async def _send(self, status: str, result: P):
         """Although it's not an async function, it requires the existence of an event loop."""
 
-        self._logger.info("Channel %s sends message: %s", self.label(), message)
-        self.channel.send(message)
+        reply = SimpleReply(status, result)
+        self._logger.info("Channel %s sends message: %s", self.label(), reply)
+        self.channel.send(pickle.dumps(reply))
 
 
-class PeerConnection:
+class OutwardLoopback(Outward, Generic[P, R]):
+    def __init__(
+        self,
+        label: str,
+        send_stream: MemoryObjectSendStream[tuple[str, P]],
+        recv_stream: MemoryObjectReceiveStream[tuple[str, R]],
+    ):
+        self._logger = logging.getLogger(self.__class__.__name__)
+        self._label = label
+
+        self.send_stream = send_stream
+        """Used to send request to the other side"""
+
+        self.recv_stream = recv_stream
+        """Used to receive reply to the other side"""
+
+    def label(self) -> str:
+        return self._label
+
+    async def recv(self) -> tuple[str, R]:
+        return await self.recv_stream.receive()
+
+    async def send(self, op: str, data: P):
+        await self.send_stream.send((op, data))
+
+    def close(self):
+        self.send_stream.close()
+        self.recv_stream.close()
+
+
+class InwardLoopback(Inward, Generic[P, R]):
+    def __init__(
+        self,
+        label: str,
+        recv_stream: MemoryObjectReceiveStream[tuple[str, P]],
+        send_stream: MemoryObjectSendStream[tuple[str, R]],
+        hooks: dict[
+            str,
+            Callable[[P], Coroutine[Any, Any, tuple[str, R]]]
+            | Callable[[P], tuple[str, R]],
+        ],
+        tg: TaskGroup,
+    ):
+        super().__init__(hooks)
+        self._logger = logging.getLogger(self.__class__.__name__)
+        self._label = label
+        self.send_stream = send_stream
+        self.recv_stream = recv_stream
+
+        async def onmessage():
+            async for message in recv_stream:
+                await self.handle(message[0], message[1])
+
+        tg.start_soon(onmessage)
+
+    def label(self) -> str:
+        return self._label
+
+    async def _send(self, status: str, result: R):
+        """Although it's not an async function, it requires the existence of an event loop."""
+
+        await self.send_stream.send((status, result))
+        self._logger.info(
+            "Channel %s sends message: %s", self.label(), (status, result)
+        )
+
+
+class PeerConnection(Connection):
     class State:
         DEAD = 0
         OFFERED = 1
@@ -163,6 +276,7 @@ class PeerConnection:
         self.state = PeerConnection.State.DEAD
         self.in_channel: Optional[InwardDataChannel] = None
         self.out_channel: Optional[OutwardDataChannel] = None
+        self.recv_stream = anyio.Lock()
         self.lock = anyio.Lock()
         self.condition = anyio.Condition(self.lock)
 
@@ -318,10 +432,32 @@ class PeerConnection:
         return await self.out_channel.recv()
 
 
+class SelfConnection(Connection):
+    def __init__(
+        self,
+        id: str,
+        hooks: dict[
+            str,
+            Callable[[P], Coroutine[Any, Any, tuple[str, R]]]
+            | Callable[[P], tuple[str, R]],
+        ],
+        tg: TaskGroup,
+    ):
+        req_send, req_recv = create_memory_object_stream[tuple[str, P]]()
+        rep_send, rep_recv = create_memory_object_stream[tuple[str, R]]()
+        self.out_loop = OutwardLoopback(id, req_send, rep_recv)
+        self.in_loop = InwardLoopback(id, req_recv, rep_send, hooks, tg)
+
+    async def send(self, op: str, data: P):
+        await self.out_loop.send(op, data)
+
+    async def recv(self) -> Optional[tuple[str, Any]]:
+        return await self.out_loop.recv()
+
+
 class Peer:
     def __init__(
         self,
-        tg: TaskGroup,
         worker_id: str,
         signaling_url: str,
         ice_configs: list[tuple[str, Optional[str], Optional[str]]],
@@ -330,6 +466,7 @@ class Peer:
             Callable[[P], Coroutine[Any, Any, tuple[str, R]]]
             | Callable[[P], tuple[str, R]],
         ],
+        tg: TaskGroup,
     ):
 
         self._logger = logging.getLogger(self.__class__.__name__)
@@ -350,6 +487,7 @@ class Peer:
         self.ice_configs = ice_configs
 
         self.conns: dict[str, PeerConnection] = {}
+        self.lo = SelfConnection(worker_id, self.hooks, tg)
         self.lock = anyio.Lock()
 
         self.tg.start_soon(self._register)
@@ -363,7 +501,10 @@ class Peer:
         async with self.lock:
             if from_worker_id not in self.conns:
                 self.conns[from_worker_id] = PeerConnection(
-                    self.worker_id, from_worker_id, self.ice_configs, self.hooks
+                    self.worker_id,
+                    from_worker_id,
+                    self.ice_configs,
+                    self.hooks,
                 )
             pc = self.conns[from_worker_id]
             answer = await pc.create_answer(request.sdp)
@@ -412,7 +553,10 @@ class Peer:
                 self._logger.warn("Failed to connect to signaling server due to %s", e)
                 await anyio.sleep(1)
 
-    async def connect(self, to_worker_id: str) -> Optional[PeerConnection]:
+    async def connect(self, to_worker_id: str) -> Optional[Connection]:
+        if to_worker_id == self.worker_id:
+            return self.lo
+
         async with self.lock:
             if to_worker_id not in self.conns:
                 self.conns[to_worker_id] = PeerConnection(
