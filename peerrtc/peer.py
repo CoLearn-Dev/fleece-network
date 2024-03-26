@@ -561,16 +561,14 @@ class Peer:
                     self.worker_id, to_worker_id, self.ice_configs, self.hooks
                 )
             pc = self.conns[to_worker_id]
-            ws = self.ws
-            if ws is None:
-                return None  # not connected to signaling server
+
+        ws = self.ws
+        if ws is None:
+            return None  # not connected to signaling server
 
         offer = await pc.create_offer()
         if offer is not None:
-            if ws is not None:
-                await ws.send(
-                    pickle.dumps(ConnectRequest(self.worker_id, to_worker_id, offer))
-                )
-            return pc
-        else:
-            return None
+            await ws.send(
+                pickle.dumps(ConnectRequest(self.worker_id, to_worker_id, offer))
+            )
+        return pc
