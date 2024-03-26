@@ -18,18 +18,18 @@ id = "worker-id"
 
 [signaling]
 ip = "signaling-server-ip"
-port = signaling-server-port
+port = 8765
 
 [[turn]]
 ip = "turn-server-ip"
-port = turn-server-port
+port = 3478
 username = "turn-server-username"
 credential = "turn-server-credential"
 
 
 [stun]
 ip = "stun-server-ip"
-port = stun-server-port
+port = 19302
 ```
 
 Fill the blank with your own configuration.
