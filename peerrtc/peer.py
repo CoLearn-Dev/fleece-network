@@ -14,18 +14,21 @@ from aiortc import (  # type: ignore
     RTCDataChannel,
     RTCSessionDescription,
 )
+from fastapi import HTTPException, Response
 from pydantic import BaseModel, validate_call
 import websockets
 
 from peerrtc.messages import (
     ConnectReply,
     ConnectRequest,
-    SimpleReply,
     SimpleRequest,
     RegisterRequest,
 )
 
 logger = logging.getLogger(__name__)
+
+Handler = Callable[[BaseModel], Response]
+AsyncHandler = Callable[[BaseModel], Coroutine[Any, Any, Response]]
 
 
 class Outward(ABC):
@@ -34,7 +37,7 @@ class Outward(ABC):
         pass
 
     @abstractmethod
-    async def send(self, op: str, data: BaseModel) -> tuple[str, BaseModel]:
+    async def send(self, op: str, data: BaseModel) -> Response:
         pass
 
     @abstractmethod
@@ -45,11 +48,7 @@ class Outward(ABC):
 class Inward(ABC):
     def __init__(
         self,
-        hooks: dict[
-            str,
-            Callable[[BaseModel], Coroutine[Any, Any, tuple[str, BaseModel]]]
-            | Callable[[BaseModel], tuple[str, BaseModel]],
-        ],
+        hooks: dict[str, Handler | AsyncHandler],
     ):
         self.hooks = hooks
 
@@ -58,34 +57,36 @@ class Inward(ABC):
         pass
 
     @abstractmethod
-    async def _send(self, id: int, status: str, result: BaseModel):
+    async def _send(self, id: int, reply: Response):
         pass
 
     async def handle(self, id: int, op: str, data: BaseModel):
         callback = self.hooks.get(op)
 
-        async def ahandler(
-            callback: Callable[[BaseModel], Coroutine[Any, Any, tuple[str, BaseModel]]]
-        ):
-            status, result = await callback(data)
-            await self._send(id, status, result)
+        async def ahandler(callback: AsyncHandler):
+            return await callback(data)
 
-        async def handler(callback: Callable[[BaseModel], tuple[str, BaseModel]]):
-            status, result = await to_thread.run_sync(callback, data)
-            await self._send(id, status, result)
+        async def handler(callback: Handler):
+            return await to_thread.run_sync(callback, data)
 
         if callback is not None:
-            if inspect.iscoroutinefunction(callback):
-                await ahandler(callback)
-            elif inspect.isfunction(callback):
-                await handler(callback)
-            else:
+            if not inspect.isfunction(callback):  # assertion
                 raise ValueError("Invalid callback type")
+
+            try:
+                if inspect.iscoroutinefunction(callback):
+                    result = await ahandler(callback)
+                else:
+                    result = await handler(callback)
+            except HTTPException as e:
+                await self._send(id, Response(e.detail, e.status_code, e.headers))
+            else:
+                await self._send(id, Response(result))
 
 
 class Connection(ABC):
     @abstractmethod
-    async def send(self, op: str, data: BaseModel) -> tuple[str, BaseModel]:
+    async def send(self, op: str, data: BaseModel) -> Response:
         pass
 
 
@@ -95,7 +96,7 @@ class OutwardDataChannel(Outward):
         self.channel = channel
         self.isopen = Event()
         self.lock = anyio.Lock()
-        self.map: dict[int, MemoryObjectSendStream[tuple[str, BaseModel]]] = {}
+        self.map: dict[int, MemoryObjectSendStream[Response]] = {}
         self.counter = 0
 
         @channel.on("open")
@@ -108,10 +109,10 @@ class OutwardDataChannel(Outward):
             self._logger.info(
                 "Outward data channel %s receives message: %s", self.label(), raw
             )
-            reply: SimpleReply = pickle.loads(raw)
+            reply = pickle.loads(raw)
             async with self.lock:
                 send_stream = self.map.pop(reply.id)
-                await send_stream.send((reply.status, reply.data))
+                await send_stream.send(reply)
 
         @channel.on("close")
         async def on_close():
@@ -120,9 +121,9 @@ class OutwardDataChannel(Outward):
     def label(self) -> str:
         return self.channel.label
 
-    async def send(self, op: str, data: BaseModel) -> tuple[str, BaseModel]:
+    async def send(self, op: str, data: BaseModel) -> Response:
         await self.isopen.wait()
-        send_stream, recv_stream = create_memory_object_stream[tuple[str, BaseModel]]()
+        send_stream, recv_stream = create_memory_object_stream[Response]()
         async with self.lock:
             id = self.counter
             self.counter += 1
@@ -141,11 +142,7 @@ class InwardDataChannel(Inward):
     def __init__(
         self,
         channel: RTCDataChannel,
-        hooks: dict[
-            str,
-            Callable[[BaseModel], Coroutine[Any, Any, tuple[str, BaseModel]]]
-            | Callable[[BaseModel], tuple[str, BaseModel]],
-        ],
+        hooks: dict[str, Handler | AsyncHandler],
     ):
         super().__init__(hooks)
         self._logger = logging.getLogger(self.__class__.__name__)
@@ -167,10 +164,9 @@ class InwardDataChannel(Inward):
     def label(self) -> str:
         return self.channel.label
 
-    async def _send(self, id: int, status: str, result: BaseModel):
+    async def _send(self, id: int, reply: Response):
         """Although it's not an async function, it requires the existence of an event loop."""
 
-        reply = SimpleReply(id, status, result)
         self._logger.info("Channel %s sends message: %s", self.label(), reply)
         self.channel.send(pickle.dumps(reply))
 
@@ -180,7 +176,7 @@ class OutwardLoopback(Outward):
         self,
         label: str,
         send_stream: MemoryObjectSendStream[tuple[int, str, BaseModel]],
-        recv_stream: MemoryObjectReceiveStream[tuple[int, str, BaseModel]],
+        recv_stream: MemoryObjectReceiveStream[tuple[int, Response]],
         tg: TaskGroup,
     ):
         self._logger = logging.getLogger(self.__class__.__name__)
@@ -193,23 +189,23 @@ class OutwardLoopback(Outward):
         """Used to receive reply to the other side"""
 
         self.lock = anyio.Lock()
-        self.map: dict[int, MemoryObjectSendStream[tuple[str, BaseModel]]] = {}
+        self.map: dict[int, MemoryObjectSendStream[Response]] = {}
         self.counter = 0
 
         async def onmessage():
             async for message in recv_stream:
-                id, status, result = message
+                id, reply = message
                 async with self.lock:
                     send_stream = self.map.pop(id)
-                tg.start_soon(send_stream.send, (status, result))
+                tg.start_soon(send_stream.send, reply)
 
         tg.start_soon(onmessage)
 
     def label(self) -> str:
         return self._label
 
-    async def send(self, op: str, data: BaseModel) -> tuple[str, BaseModel]:
-        send_stream, recv_stream = create_memory_object_stream[tuple[str, BaseModel]]()
+    async def send(self, op: str, data: BaseModel) -> Response:
+        send_stream, recv_stream = create_memory_object_stream[Response]()
         async with self.lock:
             id = self.counter
             self.counter += 1
@@ -227,12 +223,8 @@ class InwardLoopback(Inward):
         self,
         label: str,
         recv_stream: MemoryObjectReceiveStream[tuple[int, str, BaseModel]],
-        send_stream: MemoryObjectSendStream[tuple[int, str, BaseModel]],
-        hooks: dict[
-            str,
-            Callable[[BaseModel], Coroutine[Any, Any, tuple[str, BaseModel]]]
-            | Callable[[BaseModel], tuple[str, BaseModel]],
-        ],
+        send_stream: MemoryObjectSendStream[tuple[int, Response]],
+        hooks: dict[str, Handler | AsyncHandler],
         tg: TaskGroup,
     ):
         super().__init__(hooks)
@@ -250,13 +242,11 @@ class InwardLoopback(Inward):
     def label(self) -> str:
         return self._label
 
-    async def _send(self, id: int, status: str, result: BaseModel):
+    async def _send(self, id: int, reply: Response):
         """Although it's not an async function, it requires the existence of an event loop."""
 
-        await self.send_stream.send((id, status, result))
-        self._logger.info(
-            "Channel %s sends message: %s", self.label(), (status, result)
-        )
+        await self.send_stream.send((id, reply))
+        self._logger.info("Channel %s sends message: %s", self.label(), reply)
 
 
 class PeerConnection(Connection):
@@ -271,11 +261,7 @@ class PeerConnection(Connection):
         from_id: str,
         to_id: str,
         configs: list[tuple[str, Optional[str], Optional[str]]],
-        hooks: dict[
-            str,
-            Callable[[BaseModel], Coroutine[Any, Any, tuple[str, BaseModel]]]
-            | Callable[[BaseModel], tuple[str, BaseModel]],
-        ],
+        hooks: dict[str, AsyncHandler | Handler],
         tg: TaskGroup,
     ):
         self._logger = logging.getLogger(self.__class__.__name__)
@@ -444,7 +430,7 @@ class PeerConnection(Connection):
                 else:
                     self._logger.error("No inner peer connection")
 
-    async def send(self, op: str, data: BaseModel) -> tuple[str, BaseModel]:
+    async def send(self, op: str, data: BaseModel) -> Response:
         while True:
             async with self.condition:
                 if self.state == PeerConnection.State.CONNECTED:
@@ -456,7 +442,7 @@ class PeerConnection(Connection):
                             "No outward data channel within connected connection"
                         )
                 elif self.state == PeerConnection.State.DEAD:
-                    raise Exception("Connection is dead") # TODO: better exception
+                    raise Exception("Connection is dead")  # TODO: better exception
                 else:
                     await self.condition.wait()
 
@@ -465,19 +451,15 @@ class SelfConnection(Connection):
     def __init__(
         self,
         id: str,
-        hooks: dict[
-            str,
-            Callable[[BaseModel], Coroutine[Any, Any, tuple[str, BaseModel]]]
-            | Callable[[BaseModel], tuple[str, BaseModel]],
-        ],
+        hooks: dict[str, AsyncHandler | Handler],
         tg: TaskGroup,
     ):
         req_send, req_recv = create_memory_object_stream[tuple[int, str, BaseModel]]()
-        rep_send, rep_recv = create_memory_object_stream[tuple[int, str, BaseModel]]()
+        rep_send, rep_recv = create_memory_object_stream[tuple[int, Response]]()
         self.out_loop = OutwardLoopback(id, req_send, rep_recv, tg)
         self.in_loop = InwardLoopback(id, req_recv, rep_send, hooks, tg)
 
-    async def send(self, op: str, data: BaseModel) -> tuple[str, BaseModel]:
+    async def send(self, op: str, data: BaseModel) -> Response:
         return await self.out_loop.send(op, data)
 
 
@@ -487,11 +469,7 @@ class Peer:
         worker_id: str,
         signaling_url: str,
         ice_configs: list[tuple[str, Optional[str], Optional[str]]],
-        hooks: dict[
-            str,
-            Callable[[BaseModel], Coroutine[Any, Any, tuple[str, BaseModel]]]
-            | Callable[[BaseModel], tuple[str, BaseModel]],
-        ],
+        hooks: dict[str, AsyncHandler | Handler],
         tg: TaskGroup,
     ):
 
