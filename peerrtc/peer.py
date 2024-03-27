@@ -276,6 +276,7 @@ class PeerConnection(Connection):
             Callable[[BaseModel], Coroutine[Any, Any, tuple[str, BaseModel]]]
             | Callable[[BaseModel], tuple[str, BaseModel]],
         ],
+        tg: TaskGroup,
     ):
         self._logger = logging.getLogger(self.__class__.__name__)
         self.from_id = from_id
@@ -283,6 +284,7 @@ class PeerConnection(Connection):
         self.configs = configs
         self.inner: Optional[RTCPeerConnection] = None  # changed with state
         self.hooks = hooks
+        self.tg = tg
 
         self.state = PeerConnection.State.DEAD
         self.in_channel: Optional[InwardDataChannel] = None
@@ -340,30 +342,53 @@ class PeerConnection(Connection):
 
         return pc
 
-    async def create_offer(self) -> Optional[RTCSessionDescription]:
+    async def send_through_ws(
+        self, ws: websockets.WebSocketClientProtocol, sdp: RTCSessionDescription
+    ):
+        try:
+            if sdp.type == "offer":
+                await ws.send(
+                    pickle.dumps(ConnectRequest(self.from_id, self.to_id, sdp))
+                )
+            else:
+                await ws.send(pickle.dumps(ConnectReply(self.from_id, self.to_id, sdp)))
+        except:
+            async with self.condition:
+                await self._kill_inner()
+            self._logger.error("Failed to send sdp")
+
+    async def create_offer(
+        self, ws: Optional[websockets.WebSocketClientProtocol]
+    ) -> bool:
+        if ws is None:
+            return False
+
         """For return part, None means connected."""
         async with self.lock:
             if self.state != PeerConnection.State.DEAD:
                 self._logger.info("No need to create offer")
-                return None
+                return False
 
             self.state = PeerConnection.State.OFFERED
             pc = await self._init_inner()
             await pc.setLocalDescription(await pc.createOffer())
+            offer = pc.localDescription
 
-            self._logger.info("Create offer with %s", pc.localDescription)
+            self._logger.info("Create offer with %s", offer)
 
-            return pc.localDescription
+        self.tg.start_soon(self.send_through_ws, ws, offer)
+
+        return True
 
     async def create_answer(
-        self, sdp: RTCSessionDescription
-    ) -> Optional[RTCSessionDescription]:
+        self, ws: websockets.WebSocketClientProtocol, sdp: RTCSessionDescription
+    ) -> bool:
         async with self.condition:
             if sdp.type != "offer":
                 self._logger.warning(
                     "Invalid sdp type: %s for creating answer", sdp.type
                 )
-                return None
+                return False
 
             if self.state == PeerConnection.State.CONNECTED:
                 # the peer might lose connection and try to reconnect
@@ -377,7 +402,7 @@ class PeerConnection(Connection):
                     self._logger.info(
                         "Both peer want to establish connection, but I'm the offerer."
                     )
-                    return None
+                    return False
                 else:
                     await self._kill_inner()
                     self.condition.notify_all()
@@ -389,8 +414,11 @@ class PeerConnection(Connection):
             pc = await self._init_inner()
             await pc.setRemoteDescription(sdp)
             await pc.setLocalDescription(await pc.createAnswer())
+            answer = pc.localDescription
 
-            return pc.localDescription
+        self.tg.start_soon(self.send_through_ws, ws, answer)
+
+        return True
 
     async def set_answer(self, sdp: Optional[RTCSessionDescription]):
         async with self.lock:
@@ -428,7 +456,7 @@ class PeerConnection(Connection):
                             "No outward data channel within connected connection"
                         )
                 elif self.state == PeerConnection.State.DEAD:
-                    raise Exception("Connection is dead")
+                    raise Exception("Connection is dead") # TODO: better exception
                 else:
                     await self.condition.wait()
 
@@ -503,11 +531,10 @@ class Peer:
                     from_worker_id,
                     self.ice_configs,
                     self.hooks,
+                    self.tg,
                 )
             pc = self.conns[from_worker_id]
-            answer = await pc.create_answer(request.sdp)
-            answermsg = ConnectReply(self.worker_id, from_worker_id, answer)
-        await ws.send(pickle.dumps(answermsg))
+            await pc.create_answer(ws, request.sdp)
 
     async def _resolve(self, reply: ConnectReply):
         async with self.lock:
@@ -551,34 +578,17 @@ class Peer:
                 self._logger.warn("Failed to connect to signaling server due to %s", e)
                 await anyio.sleep(1)
 
-    async def _offer(
-        self,
-        pc: PeerConnection,
-        ws: websockets.WebSocketClientProtocol,
-        to_worker_id: str,
-    ):
-        offer = await pc.create_offer()
-        if offer is not None:
-            await ws.send(
-                pickle.dumps(ConnectRequest(self.worker_id, to_worker_id, offer))
-            )
-
-    async def connect(self, to_worker_id: str) -> Optional[Connection]:
+    async def connect(self, to_worker_id: str) -> Connection:
         if to_worker_id == self.worker_id:
             return self.lo
 
         async with self.lock:
             if to_worker_id not in self.conns:
                 self.conns[to_worker_id] = PeerConnection(
-                    self.worker_id, to_worker_id, self.ice_configs, self.hooks
+                    self.worker_id, to_worker_id, self.ice_configs, self.hooks, self.tg
                 )
             pc = self.conns[to_worker_id]
 
-        async with self.lock:
-            ws = self.ws
-            if ws is None:
-                return None  # not connected to signaling server
-
-        self.tg.start_soon(self._offer, pc, ws, to_worker_id)
+        await pc.create_offer(self.ws)
 
         return pc
