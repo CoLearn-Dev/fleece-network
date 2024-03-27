@@ -507,7 +507,7 @@ class Peer:
             pc = self.conns[from_worker_id]
             answer = await pc.create_answer(request.sdp)
             answermsg = ConnectReply(self.worker_id, from_worker_id, answer)
-            await ws.send(pickle.dumps(answermsg))
+        await ws.send(pickle.dumps(answermsg))
 
     async def _resolve(self, reply: ConnectReply):
         async with self.lock:
@@ -551,6 +551,18 @@ class Peer:
                 self._logger.warn("Failed to connect to signaling server due to %s", e)
                 await anyio.sleep(1)
 
+    async def _offer(
+        self,
+        pc: PeerConnection,
+        ws: websockets.WebSocketClientProtocol,
+        to_worker_id: str,
+    ):
+        offer = await pc.create_offer()
+        if offer is not None:
+            await ws.send(
+                pickle.dumps(ConnectRequest(self.worker_id, to_worker_id, offer))
+            )
+
     async def connect(self, to_worker_id: str) -> Optional[Connection]:
         if to_worker_id == self.worker_id:
             return self.lo
@@ -562,13 +574,11 @@ class Peer:
                 )
             pc = self.conns[to_worker_id]
 
-        ws = self.ws
-        if ws is None:
-            return None  # not connected to signaling server
+        async with self.lock:
+            ws = self.ws
+            if ws is None:
+                return None  # not connected to signaling server
 
-        offer = await pc.create_offer()
-        if offer is not None:
-            await ws.send(
-                pickle.dumps(ConnectRequest(self.worker_id, to_worker_id, offer))
-            )
+        self.tg.start_soon(self._offer, pc, ws, to_worker_id)
+
         return pc
