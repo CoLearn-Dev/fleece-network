@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Any, Generic, Optional, TypeVar
 from aiortc import RTCSessionDescription  # type: ignore
+from fastapi import Response
 from pydantic import BaseModel  # type: ignore
 
 
@@ -39,7 +40,6 @@ class SimpleRequest(Generic[T]):
 
 
 @dataclass
-class SimpleReply(Generic[T]):
+class SimpleReply:
     id: int
-    status: str
-    data: T
+    data: Response

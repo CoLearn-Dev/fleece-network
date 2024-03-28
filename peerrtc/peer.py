@@ -21,6 +21,7 @@ import websockets
 from peerrtc.messages import (
     ConnectReply,
     ConnectRequest,
+    SimpleReply,
     SimpleRequest,
     RegisterRequest,
 )
@@ -109,10 +110,10 @@ class OutwardDataChannel(Outward):
             self._logger.info(
                 "Outward data channel %s receives message: %s", self.label(), raw
             )
-            reply = pickle.loads(raw)
+            reply: SimpleReply = pickle.loads(raw)
             async with self.lock:
                 send_stream = self.map.pop(reply.id)
-                await send_stream.send(reply)
+                await send_stream.send(reply.data)
 
         @channel.on("close")
         async def on_close():
@@ -168,7 +169,7 @@ class InwardDataChannel(Inward):
         """Although it's not an async function, it requires the existence of an event loop."""
 
         self._logger.info("Channel %s sends message: %s", self.label(), reply)
-        self.channel.send(pickle.dumps(reply))
+        self.channel.send(pickle.dumps(SimpleReply(id, reply)))
 
 
 class OutwardLoopback(Outward):
