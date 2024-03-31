@@ -1,9 +1,10 @@
 __pycache__/
 dist/
 
+poetry.lock
 .python-version
 *.sh
 *.log
-
 *.toml
+
 !pyproject.toml

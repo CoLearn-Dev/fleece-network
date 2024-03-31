@@ -1,15 +1,20 @@
-[project]
-name = "fleece_network"
-version = "0.0.1"
-authors = [{ name = "Linyu Wu", email = "celve03@gmail.com" }]
+[tool.poetry]
+name = "fleece-network"
+version = "0.1.0"
 description = "P2P socket built on aiortc."
+authors = ["Linyu Wu <celve03@gmail.com>"]
 readme = "README.md"
-requires-python = ">=3.8"
-dependencies = ["uvicorn", "websockets", "toml", "aiortc", "aioconsole"]
+packages = [{ include = "peerrtc" }]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+aiortc = "^1.8.0"
+uvicorn = "^0.29.0"
+websockets = "^12.0"
+toml = "^0.10.2"
+aioconsole = "^0.7.0"
+aioice = { git = "https://github.com/celve/aioice" }
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-packages = ["peerrtc"]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
