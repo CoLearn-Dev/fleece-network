@@ -437,7 +437,8 @@ class PeerConnection(Connection):
                 if self.state == PeerConnection.State.CONNECTED:
                     if self.out_channel is not None:
                         self._logger.info("Sending message: %s", op)
-                        return await self.out_channel.send(op, data)
+                        channel = self.out_channel
+                        break
                     else:
                         self._logger.error(
                             "No outward data channel within connected connection"
@@ -446,6 +447,8 @@ class PeerConnection(Connection):
                     raise Exception("Connection is dead")  # TODO: better exception
                 else:
                     await self.condition.wait()
+
+        return await channel.send(op, data)
 
 
 class SelfConnection(Connection):
