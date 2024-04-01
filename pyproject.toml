@@ -8,12 +8,11 @@ packages = [{ include = "peerrtc" }]
 
 [tool.poetry.dependencies]
 python = "^3.10"
-aiortc = "^1.8.0"
+aiortc2 = "^1.8.0"
 uvicorn = "^0.29.0"
 websockets = "^12.0"
 toml = "^0.10.2"
 aioconsole = "^0.7.0"
-aioice = { git = "https://github.com/celve/aioice" }
 
 [build-system]
 requires = ["poetry-core"]
