@@ -69,10 +69,10 @@ async def main():
     config = toml.load("config.toml")
     test = SpeedTest()
 
-    async def sum(data: Any):
-        if data == "start":
+    async def sum(message: Message):
+        if message.data == "start":
             test.start()
-        elif data == "end":
+        elif message.data == "end":
             logger.warning("Bandwidth: %s MB/s", test.end() / 1024 / 1024)
         else:
             test.go(size)

@@ -28,7 +28,10 @@ async def delegator(peer: Peer):
             elif op == "send":
                 if channel is not None:
                     reply = await channel.send("rtt", Message(data=time.time()))
-                    logger.info(time.time() - float(reply.body))
+                    logger.info(
+                        time.time()
+                        - float(Message.model_validate_json(reply.body).data)
+                    )
                 else:
                     logger.warning("No channel")
             else:
@@ -40,7 +43,7 @@ async def delegator(peer: Peer):
 async def main():
     config = toml.load("config.toml")
 
-    async def echo(data: Any):
+    async def echo(data: Message) -> Message:
         return data
 
     async with create_task_group() as tg:

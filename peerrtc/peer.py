@@ -8,7 +8,16 @@ from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 import logging
 import pickle
-from typing import Any, Callable, Coroutine, Optional, get_type_hints
+from typing import (
+    Any,
+    Callable,
+    Coroutine,
+    Optional,
+    Protocol,
+    TypeVar,
+    Union,
+    get_type_hints,
+)
 from aiortc import (  # type: ignore
     RTCPeerConnection,
     RTCConfiguration,
@@ -30,8 +39,17 @@ from peerrtc.messages import (
 
 logger = logging.getLogger(__name__)
 
-Handler = Callable[[BaseModel], BaseModel]
-AsyncHandler = Callable[[BaseModel], Coroutine[Any, Any, BaseModel]]
+
+class Encodable(Protocol):
+    @abstractmethod
+    def encode(self, charset: str) -> bytes: ...
+
+
+P = TypeVar("P", bound=BaseModel)
+E = TypeVar("E", bound=Encodable)
+R = Union[E, str]
+Handler = Callable[[P], R]
+AsyncHandler = Callable[[P], Coroutine[Any, Any, R]]
 
 
 class Outward(ABC):
@@ -40,7 +58,7 @@ class Outward(ABC):
         pass
 
     @abstractmethod
-    async def send(self, op: str, data: BaseModel) -> Response:
+    async def send(self, op: str, data: P) -> Response:
         pass
 
     @abstractmethod
@@ -63,7 +81,7 @@ class Inward(ABC):
     async def _send(self, id: int, reply: Response):
         pass
 
-    async def handle(self, id: int, op: str, data: BaseModel):
+    async def handle(self, id: int, op: str, data: P):
         callback = self.hooks.get(op)
 
         async def ahandler(callback: AsyncHandler):
@@ -76,22 +94,24 @@ class Inward(ABC):
             if not inspect.isfunction(callback):  # assertion
                 raise ValueError("Invalid callback type")
             try:
-                try:
-                    if inspect.iscoroutinefunction(callback):
-                        result = await ahandler(callback)
-                    else:
-                        result = await handler(callback)
-                except HTTPException as e:
-                    await self._send(id, Response(e.detail, e.status_code, e.headers))
+                if inspect.iscoroutinefunction(callback):
+                    result = await ahandler(callback)
                 else:
+                    result = await handler(callback)
+            except HTTPException as e:
+                await self._send(id, Response(e.detail, e.status_code, e.headers))
+            else:
+                if isinstance(result, BaseModel):
                     await self._send(id, Response(result.model_dump_json()))
-            except Exception as e:
-                print(e)
+                elif isinstance(result, str):
+                    await self._send(id, Response(result))
+                else:  # assertion
+                    raise ValueError("Invalid result type")
 
 
 class Connection(ABC):
     @abstractmethod
-    async def send(self, op: str, data: BaseModel) -> Response:
+    async def send(self, op: str, data: P) -> Response:
         pass
 
 
@@ -126,7 +146,7 @@ class OutwardDataChannel(Outward):
     def label(self) -> str:
         return self.channel.label
 
-    async def send(self, op: str, data: BaseModel) -> Response:
+    async def send(self, op: str, data: P) -> Response:
         await self.isopen.wait()
         send_stream, recv_stream = create_memory_object_stream[Response]()
         async with self.lock:
@@ -180,7 +200,7 @@ class OutwardLoopback(Outward):
     def __init__(
         self,
         label: str,
-        send_stream: MemoryObjectSendStream[tuple[int, str, BaseModel]],
+        send_stream: MemoryObjectSendStream[tuple[int, str, P]],
         recv_stream: MemoryObjectReceiveStream[tuple[int, Response]],
         tg: TaskGroup,
     ):
@@ -209,7 +229,7 @@ class OutwardLoopback(Outward):
     def label(self) -> str:
         return self._label
 
-    async def send(self, op: str, data: BaseModel) -> Response:
+    async def send(self, op: str, data: P) -> Response:
         send_stream, recv_stream = create_memory_object_stream[Response]()
         async with self.lock:
             id = self.counter
@@ -227,7 +247,7 @@ class InwardLoopback(Inward):
     def __init__(
         self,
         label: str,
-        recv_stream: MemoryObjectReceiveStream[tuple[int, str, BaseModel]],
+        recv_stream: MemoryObjectReceiveStream[tuple[int, str, P]],
         send_stream: MemoryObjectSendStream[tuple[int, Response]],
         hooks: dict[str, Handler | AsyncHandler],
         tg: TaskGroup,
@@ -435,7 +455,7 @@ class PeerConnection(Connection):
                 else:
                     self._logger.error("No inner peer connection")
 
-    async def send(self, op: str, data: BaseModel) -> Response:
+    async def send(self, op: str, data: P) -> Response:
         while True:
             async with self.condition:
                 if self.state == PeerConnection.State.CONNECTED:
@@ -467,7 +487,7 @@ class SelfConnection(Connection):
         self.out_loop = OutwardLoopback(id, req_send, rep_recv, tg)
         self.in_loop = InwardLoopback(id, req_recv, rep_send, hooks, tg)
 
-    async def send(self, op: str, data: BaseModel) -> Response:
+    async def send(self, op: str, data: P) -> Response:
         return await self.out_loop.send(op, data)
 
 
