@@ -29,7 +29,7 @@ from fastapi import HTTPException, Response
 from pydantic import BaseModel
 import websockets
 
-from peerrtc.messages import (
+from .messages import (
     ConnectReply,
     ConnectRequest,
     SimpleReply,

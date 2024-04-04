@@ -4,7 +4,7 @@ import logging
 import pickle
 from typing import Dict
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from peerrtc.messages import (
+from .messages import (
     ConnectReply,
     ConnectRequest,
     RegisterReply,

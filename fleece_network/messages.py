@@ -1,6 +1,6 @@
 from dataclasses import dataclass
-from typing import Any, Generic, Optional, TypeVar
-from aiortc import RTCSessionDescription  # type: ignore
+from typing import Generic, Optional, TypeVar
+from .aiortc import RTCSessionDescription
 from fastapi import Response
 from pydantic import BaseModel  # type: ignore
 

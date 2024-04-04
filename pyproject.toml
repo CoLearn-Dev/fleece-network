@@ -4,15 +4,17 @@ version = "0.1.0"
 description = "P2P socket built on aiortc."
 authors = ["Linyu Wu <celve03@gmail.com>"]
 readme = "README.md"
-packages = [{ include = "peerrtc" }]
+packages = [{ include = "fleece_network" }]
 
 [tool.poetry.dependencies]
 python = "^3.10"
-aiortc2 = "^1.8.0"
 uvicorn = "^0.29.0"
 websockets = "^12.0"
 toml = "^0.10.2"
 aioconsole = "^0.7.0"
+fastapi = "^0.110.1"
+pydantic = "^2.6.4"
+anyio = "^4.3.0"
 
 [build-system]
 requires = ["poetry-core"]

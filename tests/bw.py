@@ -7,7 +7,7 @@ import logging
 import logging.config
 import aioconsole  # type: ignore
 import time
-from peerrtc.peer import Peer
+from fleece_network.peer import Peer
 
 logging.config.fileConfig("logging.conf")
 logger = logging.getLogger(__name__)
