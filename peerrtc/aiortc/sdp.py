@@ -339,6 +339,8 @@ class MediaDescription:
             lines.append("a=candidate:" + candidate_to_sdp(candidate))
         if self.ice_candidates_complete:
             lines.append("a=end-of-candidates")
+
+        assert self.ice
         if self.ice.usernameFragment is not None:
             lines.append(f"a=ice-ufrag:{self.ice.usernameFragment}")
         if self.ice.password is not None:
@@ -352,6 +354,7 @@ class MediaDescription:
                 lines.append(
                     f"a=fingerprint:{fingerprint.algorithm} {fingerprint.value}"
                 )
+            assert self.dtls.role
             lines.append(f"a=setup:{DTLS_ROLE_SETUP[self.dtls.role]}")
 
         return "\r\n".join(lines) + "\r\n"
@@ -380,12 +383,14 @@ class SessionDescription:
         ice_usernameFragment = None
 
         def find_codec(pt: int) -> RTCRtpCodecParameters:
+            assert current_media
             return next(filter(lambda x: x.payloadType == pt, current_media.rtp.codecs))
 
         session_lines, media_groups = grouplines(sdp)
 
         # parse session
         session = cls()
+        print(session_lines, media_groups)
         for line in session_lines:
             if line.startswith("v="):
                 session.version = int(line.strip()[2:])
@@ -400,6 +405,7 @@ class SessionDescription:
             elif line.startswith("a="):
                 attr, value = parse_attr(line)
                 if attr == "fingerprint":
+                    assert value
                     algorithm, fingerprint = value.split()
                     dtls_fingerprints.append(
                         RTCDtlsFingerprint(algorithm=algorithm, value=fingerprint)
@@ -413,10 +419,13 @@ class SessionDescription:
                 elif attr == "ice-ufrag":
                     ice_usernameFragment = value
                 elif attr == "group":
+                    assert value
                     parse_group(session.group, value)
                 elif attr == "msid-semantic":
+                    assert value
                     parse_group(session.msid_semantic, value)
                 elif attr == "setup":
+                    assert value
                     dtls_role = DTLS_SETUP_ROLE[value]
 
         # parse media
@@ -454,10 +463,12 @@ class SessionDescription:
                 elif line.startswith("a="):
                     attr, value = parse_attr(line)
                     if attr == "candidate":
+                        assert value
                         current_media.ice_candidates.append(candidate_from_sdp(value))
                     elif attr == "end-of-candidates":
                         current_media.ice_candidates_complete = True
                     elif attr == "extmap":
+                        assert value
                         ext_id, ext_uri = value.split()
                         if "/" in ext_id:
                             ext_id, ext_direction = ext_id.split("/")
@@ -466,6 +477,7 @@ class SessionDescription:
                         )
                         current_media.rtp.headerExtensions.append(extension)
                     elif attr == "fingerprint":
+                        assert value
                         algorithm, fingerprint = value.split()
                         current_media.dtls.fingerprints.append(
                             RTCDtlsFingerprint(algorithm=algorithm, value=fingerprint)
@@ -477,24 +489,29 @@ class SessionDescription:
                     elif attr == "ice-ufrag":
                         current_media.ice.usernameFragment = value
                     elif attr == "max-message-size":
+                        assert value
                         current_media.sctpCapabilities = RTCSctpCapabilities(
                             maxMessageSize=int(value)
                         )
                     elif attr == "mid":
+                        assert value
                         current_media.rtp.muxId = value
                     elif attr == "msid":
                         current_media.msid = value
                     elif attr == "rtcp":
+                        assert value
                         port, rest = value.split(" ", 1)
                         current_media.rtcp_port = int(port)
                         current_media.rtcp_host = ipaddress_from_sdp(rest)
                     elif attr == "rtcp-mux":
                         current_media.rtcp_mux = True
                     elif attr == "setup":
+                        assert value
                         current_media.dtls.role = DTLS_SETUP_ROLE[value]
                     elif attr in DIRECTIONS:
                         current_media.direction = attr
                     elif attr == "rtpmap":
+                        assert value
                         format_id, format_desc = value.split(" ", 1)
                         bits = format_desc.split("/")
                         if current_media.kind == "audio":
@@ -512,13 +529,17 @@ class SessionDescription:
                         )
                         current_media.rtp.codecs.append(codec)
                     elif attr == "sctpmap":
+                        assert value
                         format_id, format_desc = value.split(" ", 1)
                         getattr(current_media, attr)[int(format_id)] = format_desc
                     elif attr == "sctp-port":
+                        assert value
                         current_media.sctp_port = int(value)
                     elif attr == "ssrc-group":
+                        assert value
                         parse_group(current_media.ssrc_group, value, type=int)
                     elif attr == "ssrc":
+                        assert value
                         ssrc_str, ssrc_desc = value.split(" ", 1)
                         ssrc = int(ssrc_str)
                         ssrc_attr, ssrc_value = ssrc_desc.split(":", 1)
@@ -541,10 +562,12 @@ class SessionDescription:
                 if line.startswith("a="):
                     attr, value = parse_attr(line)
                     if attr == "fmtp":
+                        assert value
                         format_id, format_desc = value.split(" ", 1)
                         codec = find_codec(int(format_id))
                         codec.parameters = parameters_from_sdp(format_desc)
                     elif attr == "rtcp-fb":
+                        assert value
                         bits = value.split(" ", 2)
                         for codec in current_media.rtp.codecs:
                             if bits[0] in ["*", str(codec.payloadType)]:
@@ -573,7 +596,7 @@ class SessionDescription:
         if self.host is not None:
             lines += [f"c={ipaddress_to_sdp(self.host)}"]
         lines += [f"t={self.time}"]
-        if any(m.ice.iceLite for m in self.media):
+        if any(m.ice.iceLite for m in self.media if m.ice is not None):
             lines += ["a=ice-lite"]
         for group in self.group:
             lines += [f"a=group:{group}"]

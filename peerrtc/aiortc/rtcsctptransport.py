@@ -22,7 +22,7 @@ from typing import (
     no_type_check,
 )
 
-from google_crc32c import value as crc32c
+from google_crc32c import value as crc32c # type: ignore
 from pyee.asyncio import AsyncIOEventEmitter
 
 from .exceptions import InvalidStateError
@@ -217,6 +217,7 @@ class ForwardTsnChunk(Chunk):
     def __init__(self, flags: int = 0, body: Optional[bytes] = None) -> None:
         self.flags = flags
         self.streams: List[Tuple[int, int]] = []
+        self.cumulative_tsn: int = 0
         if body:
             self.cumulative_tsn = unpack_from("!L", body, 0)[0]
             pos = 4
@@ -225,8 +226,6 @@ class ForwardTsnChunk(Chunk):
                     cast(Tuple[int, int], unpack_from("!HH", body, pos))
                 )
                 pos += 4
-        else:
-            self.cumulative_tsn = 0
 
     @property
     def body(self) -> bytes:  # type: ignore
@@ -435,7 +434,7 @@ class StreamResetOutgoingParam:
     request_sequence: int
     response_sequence: int
     last_tsn: int
-    streams: List[bytes] = field(default_factory=list)
+    streams: List[int] = field(default_factory=list)
 
     def __bytes__(self) -> bytes:
         data = pack(
@@ -645,7 +644,7 @@ class RTCSctpTransport(AsyncIOEventEmitter):
 
         # reconfiguration
         self._reconfig_queue: List[int] = []
-        self._reconfig_request = None
+        self._reconfig_request: Optional[StreamResetOutgoingParam] = None
         self._reconfig_request_seq = self._local_tsn
         self._reconfig_response_seq = 0
 
@@ -891,6 +890,7 @@ class RTCSctpTransport(AsyncIOEventEmitter):
         Mark an incoming data TSN as received.
         """
         # it's a duplicate
+        assert self._last_received_tsn
         if uint32_gte(self._last_received_tsn, tsn) or tsn in self._sack_misordered:
             self._sack_duplicates.append(tsn)
             return True
@@ -905,6 +905,7 @@ class RTCSctpTransport(AsyncIOEventEmitter):
 
         # filter out obsolete entries
         def is_obsolete(x):
+            assert self._last_received_tsn
             return uint32_gt(x, self._last_received_tsn)
 
         self._sack_duplicates = list(filter(is_obsolete, self._sack_duplicates))
@@ -931,18 +932,18 @@ class RTCSctpTransport(AsyncIOEventEmitter):
         elif isinstance(chunk, ForwardTsnChunk):
             await self._receive_forward_tsn_chunk(chunk)
         elif isinstance(chunk, HeartbeatChunk):
-            ack = HeartbeatAckChunk()
-            ack.params = chunk.params
-            await self._send_chunk(ack)
+            heartbeat_ack = HeartbeatAckChunk()
+            heartbeat_ack.params = chunk.params
+            await self._send_chunk(heartbeat_ack)
         elif isinstance(chunk, AbortChunk):
             self.__log_debug("x Association was aborted by remote party")
             self._set_state(self.State.CLOSED)
         elif isinstance(chunk, ShutdownChunk):
             self._t2_cancel()
             self._set_state(self.State.SHUTDOWN_RECEIVED)
-            ack = ShutdownAckChunk()
-            await self._send_chunk(ack)
-            self._t2_start(ack)
+            shutdown_ack = ShutdownAckChunk()
+            await self._send_chunk(shutdown_ack)
+            self._t2_start(shutdown_ack)
             self._set_state(self.State.SHUTDOWN_ACK_SENT)
         elif (
             isinstance(chunk, ShutdownCompleteChunk)
@@ -957,7 +958,7 @@ class RTCSctpTransport(AsyncIOEventEmitter):
             for param in chunk.params:
                 cls = RECONFIG_PARAM_TYPES.get(param[0])
                 if cls:
-                    await self._receive_reconfig_param(cls.parse(param[1]))
+                    await self._receive_reconfig_param(cls.parse(param[1])) # type: ignore
 
         # server
         elif isinstance(chunk, InitChunk) and self.is_server:
@@ -979,19 +980,19 @@ class RTCSctpTransport(AsyncIOEventEmitter):
                 self._outbound_streams_count, chunk.inbound_streams
             )
 
-            ack = InitAckChunk()
-            ack.initiate_tag = self._local_verification_tag
-            ack.advertised_rwnd = self._advertised_rwnd
-            ack.outbound_streams = self._outbound_streams_count
-            ack.inbound_streams = self._inbound_streams_max
-            ack.initial_tsn = self._local_tsn
-            self._set_extensions(ack.params)
+            init_ack = InitAckChunk()
+            init_ack.initiate_tag = self._local_verification_tag
+            init_ack.advertised_rwnd = self._advertised_rwnd
+            init_ack.outbound_streams = self._outbound_streams_count
+            init_ack.inbound_streams = self._inbound_streams_max
+            init_ack.initial_tsn = self._local_tsn
+            self._set_extensions(init_ack.params)
 
             # generate state cookie
             cookie = pack("!L", self._get_timestamp())
             cookie += hmac.new(self._hmac_key, cookie, "sha1").digest()
-            ack.params.append((SCTP_STATE_COOKIE, cookie))
-            await self._send_chunk(ack)
+            init_ack.params.append((SCTP_STATE_COOKIE, cookie))
+            await self._send_chunk(init_ack)
         elif isinstance(chunk, CookieEchoChunk) and self.is_server:
             # check state cookie MAC
             cookie = chunk.body
@@ -1012,8 +1013,8 @@ class RTCSctpTransport(AsyncIOEventEmitter):
                 await self._send_chunk(error)
                 return
 
-            ack = CookieAckChunk()
-            await self._send_chunk(ack)
+            cookie_ack = CookieAckChunk()
+            await self._send_chunk(cookie_ack)
             self._set_state(self.State.ESTABLISHED)
 
         # client
@@ -1094,10 +1095,12 @@ class RTCSctpTransport(AsyncIOEventEmitter):
         self._sack_needed = True
 
         # it's a duplicate
+        assert self._last_received_tsn
         if uint32_gte(self._last_received_tsn, chunk.cumulative_tsn):
             return
 
         def is_obsolete(x):
+            assert self._last_received_tsn
             return uint32_gt(x, self._last_received_tsn)
 
         # advance cumulative TSN
@@ -1334,6 +1337,7 @@ class RTCSctpTransport(AsyncIOEventEmitter):
         Transmit a chunk (no bundling for now).
         """
         self.__log_debug("> %s", chunk)
+        assert self._remote_port
         await self.__transport._send_data(
             serialize_packet(
                 self._local_port,
@@ -1358,9 +1362,10 @@ class RTCSctpTransport(AsyncIOEventEmitter):
         """
         Build and send a selective acknowledgement (SACK) chunk.
         """
-        gaps = []
+        gaps: list[list[int]] = []
         gap_next = None
         for tsn in sorted(self._sack_misordered):
+            assert self._last_received_tsn
             pos = (tsn - self._last_received_tsn) % SCTP_TSN_MODULO
             if tsn == gap_next:
                 gaps[-1][1] = pos
@@ -1417,6 +1422,8 @@ class RTCSctpTransport(AsyncIOEventEmitter):
             self._t1_chunk = None
 
     def _t1_expired(self) -> None:
+        assert self._loop
+        assert self._t1_chunk
         self._t1_failures += 1
         self._t1_handle = None
         self.__log_debug(
@@ -1430,6 +1437,7 @@ class RTCSctpTransport(AsyncIOEventEmitter):
 
     def _t1_start(self, chunk: Chunk) -> None:
         assert self._t1_handle is None
+        assert self._loop
         self._t1_chunk = chunk
         self._t1_failures = 0
         self.__log_debug("- T1(%s) start", chunk_type(self._t1_chunk))
@@ -1443,6 +1451,8 @@ class RTCSctpTransport(AsyncIOEventEmitter):
             self._t2_chunk = None
 
     def _t2_expired(self) -> None:
+        assert self._loop
+        assert self._t2_chunk
         self._t2_failures += 1
         self._t2_handle = None
         self.__log_debug(
@@ -1456,6 +1466,7 @@ class RTCSctpTransport(AsyncIOEventEmitter):
 
     def _t2_start(self, chunk) -> None:
         assert self._t2_handle is None
+        assert self._loop
         self._t2_chunk = chunk
         self._t2_failures = 0
         self.__log_debug("- T2(%s) start", chunk_type(self._t2_chunk))
@@ -1483,6 +1494,7 @@ class RTCSctpTransport(AsyncIOEventEmitter):
         asyncio.ensure_future(self._transmit())
 
     def _t3_restart(self) -> None:
+        assert self._loop
         self.__log_debug("- T3 restart")
         if self._t3_handle is not None:
             self._t3_handle.cancel()
@@ -1491,6 +1503,7 @@ class RTCSctpTransport(AsyncIOEventEmitter):
 
     def _t3_start(self) -> None:
         assert self._t3_handle is None
+        assert self._loop
         self.__log_debug("- T3 start")
         self._t3_handle = self._loop.call_later(self._rto, self._t3_expired)
 
@@ -1604,6 +1617,7 @@ class RTCSctpTransport(AsyncIOEventEmitter):
             self._rttvar = R / 2
             self._srtt = R
         else:
+            assert self._rttvar
             self._rttvar = (1 - SCTP_RTO_BETA) * self._rttvar + SCTP_RTO_BETA * abs(
                 self._srtt - R
             )
@@ -1624,7 +1638,7 @@ class RTCSctpTransport(AsyncIOEventEmitter):
                     asyncio.ensure_future(self._transmit_reconfig())
             else:
                 # remove any queued messages for the datachannel
-                new_queue = deque()
+                new_queue: Deque[Tuple[RTCDataChannel, int, bytes]] = deque()
                 for queue_item in self._data_channel_queue:
                     if queue_item[0] != channel:
                         new_queue.append(queue_item)
@@ -1647,7 +1661,10 @@ class RTCSctpTransport(AsyncIOEventEmitter):
         whether we are a client or a server to correctly assign an odd/even ID
         to the data channels.
         """
-        if self._association_state != self.State.ESTABLISHED:
+        if (
+            self._association_state != self.State.ESTABLISHED
+            or self._data_channel_id is None
+        ):
             return
 
         while self._data_channel_queue and not self._outbound_queue:
@@ -1681,6 +1698,9 @@ class RTCSctpTransport(AsyncIOEventEmitter):
                 channel._addBufferedAmount(-len(user_data))
 
     def _data_channel_add_negotiated(self, channel: RTCDataChannel) -> None:
+        if channel.id is None:
+            return None
+
         if channel.id in self._data_channels:
             raise ValueError(f"Data channel with ID {channel.id} already registered")
 

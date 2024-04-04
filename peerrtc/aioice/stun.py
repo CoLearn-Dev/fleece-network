@@ -255,6 +255,7 @@ class TransactionFailed(TransactionError):
 
     def __str__(self) -> str:
         out = "STUN transaction failed"
+        assert self.response
         if "ERROR-CODE" in self.response.attributes:
             out += " (%s - %s)" % self.response.attributes["ERROR-CODE"]
         return out
@@ -274,9 +275,9 @@ class Transaction:
         retransmissions: Optional[int] = None,
     ) -> None:
         self.__addr = addr
-        self.__future: asyncio.Future[
-            Tuple[Message, Tuple[str, int]]
-        ] = asyncio.Future()
+        self.__future: asyncio.Future[Tuple[Message, Tuple[str, int]]] = (
+            asyncio.Future()
+        )
         self.__request = request
         self.__timeout_delay = RETRY_RTO
         self.__timeout_handle: Optional[asyncio.TimerHandle] = None

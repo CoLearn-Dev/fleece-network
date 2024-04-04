@@ -48,7 +48,7 @@ class Encodable(Protocol):
 P = TypeVar("P", bound=BaseModel)
 E = TypeVar("E", bound=Encodable)
 R = Union[E, str]
-Handler = Callable[[P], R]
+SyncHandler = Callable[[P], R]
 AsyncHandler = Callable[[P], Coroutine[Any, Any, R]]
 
 
@@ -69,7 +69,7 @@ class Outward(ABC):
 class Inward(ABC):
     def __init__(
         self,
-        hooks: dict[str, Handler | AsyncHandler],
+        hooks: dict[str, SyncHandler | AsyncHandler],
     ):
         self.hooks = hooks
 
@@ -87,7 +87,7 @@ class Inward(ABC):
         async def ahandler(callback: AsyncHandler):
             return await callback(data)
 
-        async def handler(callback: Handler):
+        async def handler(callback: SyncHandler):
             return await to_thread.run_sync(callback, data)
 
         if callback is not None:
@@ -124,12 +124,10 @@ class OutwardDataChannel(Outward):
         self.map: dict[int, MemoryObjectSendStream[Response]] = {}
         self.counter = 0
 
-        @channel.on("open")
         def on_open():
             self.isopen.set()
             self._logger.info("Outward data channel %s opens", self.label())
 
-        @channel.on("message")
         async def on_message(raw: bytes):
             self._logger.info(
                 "Outward data channel %s receives message: %s", self.label(), raw
@@ -139,9 +137,12 @@ class OutwardDataChannel(Outward):
                 send_stream = self.map.pop(reply.id)
                 await send_stream.send(reply.data)
 
-        @channel.on("close")
         async def on_close():
             self._logger.warning("Outward data channel %s closes", self.label())
+
+        channel.on("open", on_open)
+        channel.on("message", on_message)
+        channel.on("close", on_close)
 
     def label(self) -> str:
         return self.channel.label
@@ -167,24 +168,25 @@ class InwardDataChannel(Inward):
     def __init__(
         self,
         channel: RTCDataChannel,
-        hooks: dict[str, Handler | AsyncHandler],
+        hooks: dict[str, SyncHandler | AsyncHandler],
     ):
         super().__init__(hooks)
         self._logger = logging.getLogger(self.__class__.__name__)
         self.channel = channel
 
-        @channel.on("open")
         async def on_open():
             self._logger.info("Inward data channel opened: %s", self.label())
 
-        @channel.on("message")
         async def on_message(raw: bytes):
             message: SimpleRequest = pickle.loads(raw)
             await self.handle(message.id, message.op, message.data)
 
-        @channel.on("close")
         async def on_close():
             self._logger.warning("Inward data channel %s closes", self.label())
+
+        channel.on("open", on_open)
+        channel.on("message", on_message)
+        channel.on("close", on_close)
 
     def label(self) -> str:
         return self.channel.label
@@ -249,7 +251,7 @@ class InwardLoopback(Inward):
         label: str,
         recv_stream: MemoryObjectReceiveStream[tuple[int, str, P]],
         send_stream: MemoryObjectSendStream[tuple[int, Response]],
-        hooks: dict[str, Handler | AsyncHandler],
+        hooks: dict[str, SyncHandler | AsyncHandler],
         tg: TaskGroup,
     ):
         super().__init__(hooks)
@@ -286,7 +288,7 @@ class PeerConnection(Connection):
         from_id: str,
         to_id: str,
         configs: list[tuple[str, Optional[str], Optional[str]]],
-        hooks: dict[str, AsyncHandler | Handler],
+        hooks: dict[str, AsyncHandler | SyncHandler],
         tg: TaskGroup,
     ):
         self._logger = logging.getLogger(self.__class__.__name__)
@@ -324,13 +326,11 @@ class PeerConnection(Connection):
         self.out_channel = OutwardDataChannel(pc.createDataChannel(self.from_id))
         self.inner = pc
 
-        @pc.on("datachannel")
         async def on_datachannel(channel: RTCDataChannel):
             async with self.lock:
                 self.in_channel = InwardDataChannel(channel, self.hooks)
                 self._logger.info("Data channel created: %s", self.in_channel.label())
 
-        @pc.on("connectionstatechange")
         async def on_connectionstatechange():
             async with self.condition:
                 if pc.connectionState == "connected":
@@ -350,6 +350,9 @@ class PeerConnection(Connection):
                         self.from_id,
                         self.to_id,
                     )
+
+        pc.on("datachannel", on_datachannel)
+        pc.on("connectionstatechange", on_connectionstatechange)
 
         return pc
 
@@ -384,6 +387,7 @@ class PeerConnection(Connection):
             pc = await self._init_inner()
             await pc.setLocalDescription(await pc.createOffer())
             offer = pc.localDescription
+            assert offer
 
             self._logger.info("Create offer with %s", offer)
 
@@ -426,6 +430,7 @@ class PeerConnection(Connection):
             await pc.setRemoteDescription(sdp)
             await pc.setLocalDescription(await pc.createAnswer())
             answer = pc.localDescription
+            assert answer
 
         self.tg.start_soon(self.send_through_ws, ws, answer)
 
@@ -479,7 +484,7 @@ class SelfConnection(Connection):
     def __init__(
         self,
         id: str,
-        hooks: dict[str, AsyncHandler | Handler],
+        hooks: dict[str, AsyncHandler | SyncHandler],
         tg: TaskGroup,
     ):
         req_send, req_recv = create_memory_object_stream[tuple[int, str, BaseModel]]()
@@ -497,7 +502,7 @@ class Peer:
         worker_id: str,
         signaling_url: str,
         ice_configs: list[tuple[str, Optional[str], Optional[str]]],
-        hooks: dict[str, AsyncHandler | Handler],
+        hooks: dict[str, AsyncHandler | SyncHandler],
         tg: TaskGroup,
     ):
 

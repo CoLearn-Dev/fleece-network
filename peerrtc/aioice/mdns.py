@@ -33,13 +33,13 @@ def is_mdns_hostname(name: str) -> bool:
 class MDnsProtocol(asyncio.DatagramProtocol):
     def __init__(self, tx_transport: asyncio.DatagramTransport) -> None:
         self.__closed: asyncio.Future[bool] = asyncio.Future()
-        self.zone = dns.zone.Zone("", relativize=False, rdclass=MDNS_RDCLASS)
+        self.zone = dns.zone.Zone("", relativize=False, rdclass=MDNS_RDCLASS)  # type: ignore
         self.queries: Dict[dns.name.Name, Set[asyncio.Future[str]]] = {}
 
         self.rx_transport: Optional[asyncio.DatagramTransport] = None
         self.tx_transport = tx_transport
 
-    def connection_lost(self, exc: Exception) -> None:
+    def connection_lost(self, exc: Optional[Exception]) -> None:
         # abort any outstanding queries
         for name, futures in list(self.queries.items()):
             for future in futures:
@@ -74,7 +74,7 @@ class MDnsProtocol(asyncio.DatagramProtocol):
                 for rdtype in rdtypes:
                     try:
                         response.answer.append(
-                            self.zone.find_rrset(name=question.name, rdtype=rdtype)
+                            self.zone.find_rrset(name=question.name, rdtype=rdtype)  # type: ignore
                         )
                     except KeyError:
                         continue
@@ -102,7 +102,8 @@ class MDnsProtocol(asyncio.DatagramProtocol):
     # custom
 
     async def close(self) -> None:
-        self.rx_transport.close()
+        if self.rx_transport is not None:
+            self.rx_transport.close()
         self.tx_transport.close()
         await self.__closed
 

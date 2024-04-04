@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from aioice import Candidate, Connection, ConnectionClosed
+from ..aioice import Candidate, Connection, ConnectionClosed
 from pyee.asyncio import AsyncIOEventEmitter
 
 from .exceptions import InvalidStateError

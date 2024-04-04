@@ -83,9 +83,9 @@ class TurnClientMixin:
     ) -> None:
         self.channel_refresh_at: Dict[int, float] = {}
         self.channel_to_peer: Dict[int, Tuple[str, int]] = {}
-        self.peer_connect_waiters: Dict[
-            Tuple[str, int], List[asyncio.Future[None]]
-        ] = {}
+        self.peer_connect_waiters: Dict[Tuple[str, int], List[asyncio.Future[None]]] = (
+            {}
+        )
         self.peer_to_channel: Dict[Tuple[str, int], int] = {}
 
         self.channel_number = 0x4000
@@ -133,9 +133,10 @@ class TurnClientMixin:
         # periodically refresh allocation
         self.refresh_task = asyncio.create_task(self.refresh(time_to_expiry))
 
+        assert self.relayed_address
         return self.relayed_address
 
-    def connection_lost(self, exc: Exception) -> None:
+    def connection_lost(self, exc: Any) -> None:
         logger.debug("%s connection_lost(%s)", self, exc)
         if self.receiver:
             self.receiver.connection_lost(exc)
@@ -242,6 +243,7 @@ class TurnClientMixin:
         try:
             response, addr = await self.request(request)
         except stun.TransactionFailed as e:
+            assert e.response
             error_code = e.response.attributes["ERROR-CODE"][0]
             if (
                 "NONCE" in e.response.attributes
@@ -256,6 +258,7 @@ class TurnClientMixin:
                 self.nonce = e.response.attributes["NONCE"]
                 if error_code == 401:
                     self.realm = e.response.attributes["REALM"]
+                assert self.realm
                 self.integrity_key = make_integrity_key(
                     self.username, self.realm, self.password
                 )
@@ -318,6 +321,7 @@ class TurnClientMixin:
         request.attributes["USERNAME"] = self.username
         request.attributes["NONCE"] = self.nonce
         request.attributes["REALM"] = self.realm
+        assert self.integrity_key
         request.add_message_integrity(self.integrity_key)
 
 

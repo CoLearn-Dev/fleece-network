@@ -191,7 +191,7 @@ class StunProtocol(asyncio.DatagramProtocol):
         self.transport: Optional[asyncio.DatagramTransport] = None
         self.transactions: Dict[bytes, stun.Transaction] = {}
 
-    def connection_lost(self, exc: Exception) -> None:
+    def connection_lost(self, exc: Optional[Exception]) -> None:
         self.__log_debug("connection_lost(%s)", exc)
         if not self.__closed.done():
             self.receiver.data_received(None, None)
@@ -210,6 +210,7 @@ class StunProtocol(asyncio.DatagramProtocol):
             message = stun.parse_message(data)
             self.__log_debug("< %s %s", addr, message)
         except ValueError:
+            assert self.local_candidate
             self.receiver.data_received(data, self.local_candidate.component)
             return
 
@@ -228,7 +229,8 @@ class StunProtocol(asyncio.DatagramProtocol):
     # custom
 
     async def close(self) -> None:
-        self.transport.close()
+        if self.transport is not None:
+            self.transport.close()
         await self.__closed
 
     async def request(
@@ -256,6 +258,7 @@ class StunProtocol(asyncio.DatagramProtocol):
             del self.transactions[request.transaction_id]
 
     async def send_data(self, data: bytes, addr: Tuple[str, int]) -> None:
+        assert self.transport
         self.transport.sendto(data, addr)
 
     def send_stun(self, message: stun.Message, addr: Tuple[str, int]) -> None:
@@ -263,6 +266,7 @@ class StunProtocol(asyncio.DatagramProtocol):
         Send a STUN message.
         """
         self.__log_debug("> %s %s", addr, message)
+        assert self.transport
         self.transport.sendto(bytes(message), addr)
 
     def __log_debug(self, msg: str, *args) -> None:
@@ -429,6 +433,7 @@ class Connection:
 
         # pair the remote candidate
         for protocol in self._protocols:
+            assert protocol.local_candidate
             if protocol.local_candidate.can_pair_with(
                 remote_candidate
             ) and not self._find_pair(protocol, remote_candidate):
@@ -482,6 +487,7 @@ class Connection:
         # 5.7.1. Forming Candidate Pairs
         for remote_candidate in self._remote_candidates:
             for protocol in self._protocols:
+                assert protocol.local_candidate
                 if protocol.local_candidate.can_pair_with(
                     remote_candidate
                 ) and not self._find_pair(protocol, remote_candidate):
@@ -630,6 +636,7 @@ class Connection:
         # find local candidate
         protocol = None
         for p in self._protocols:
+            assert p.local_candidate
             if (
                 p.local_candidate.component == component
                 and p.local_candidate.foundation == local_foundation
@@ -725,6 +732,7 @@ class Connection:
         """
         Handle a succesful incoming check.
         """
+        assert protocol.local_candidate
         component = protocol.local_candidate.component
 
         # find remote candidate
@@ -796,6 +804,7 @@ class Connection:
         nominate = self.ice_controlling and not self.remote_is_lite
         request = self.build_request(pair, nominate=nominate)
         try:
+            assert self.remote_password
             response, addr = await pair.protocol.request(
                 request,
                 pair.remote_addr,
@@ -904,6 +913,7 @@ class Connection:
             host_protocols.append(protocol)
 
             # add host candidate
+            assert protocol.transport
             candidate_address = protocol.transport.get_extra_info("sockname")
             protocol.local_candidate = Candidate(
                 foundation=candidate_foundation("host", "udp", candidate_address[0]),
@@ -922,6 +932,7 @@ class Connection:
         if self.stun_server:
             tasks = []
             for protocol in host_protocols:
+                assert protocol.local_candidate
                 if ipaddress.ip_address(protocol.local_candidate.host).version == 4:
                     tasks.append(
                         asyncio.create_task(
@@ -950,6 +961,7 @@ class Connection:
             self._protocols.append(protocol)
 
             # add relayed candidate
+            assert protocol.transport
             candidate_address = protocol.transport.get_extra_info("sockname")
             related_address = protocol.transport.get_extra_info("related_address")
             protocol.local_candidate = Candidate(
@@ -993,6 +1005,7 @@ class Connection:
             for pair in self._nominated.values():
                 request = self.build_request(pair, nominate=False)
                 try:
+                    assert self.remote_password
                     await pair.protocol.request(
                         request,
                         pair.remote_addr,

@@ -2,7 +2,7 @@ import math
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
-from aiortc.utils import uint32_add, uint32_gt
+from .utils import uint32_add, uint32_gt
 
 BURST_DELTA_THRESHOLD_MS = 5
 
@@ -113,6 +113,7 @@ class AimdRateControl:
 
             # we use additive or multiplicative rate increase depending on whether
             # we are close to the maximum throughput
+            assert self.last_change_ms
             if self.near_max:
                 new_bitrate += self._additive_rate_increase(self.last_change_ms, now_ms)
             else:
@@ -174,6 +175,7 @@ class AimdRateControl:
             self.avg_max_bitrate_kbps = (
                 1 - alpha
             ) * self.avg_max_bitrate_kbps + alpha * estimated_throughput_kbps
+        assert self.avg_max_bitrate_kbps
 
         norm = max(1, self.avg_max_bitrate_kbps)
         self.var_max_bitrate_kbps = (1 - alpha) * self.var_max_bitrate_kbps + alpha * (
@@ -183,7 +185,7 @@ class AimdRateControl:
 
 
 class TimestampGroup:
-    def __init__(self, timestamp: Optional[int] = None) -> None:
+    def __init__(self, timestamp: int) -> None:
         self.arrival_time: Optional[int] = None
         self.first_timestamp = timestamp
         self.last_timestamp = timestamp
@@ -220,6 +222,8 @@ class InterArrival:
             return deltas
         elif self.new_timestamp_group(timestamp, arrival_time):
             if self.previous_group is not None:
+                assert self.current_group.arrival_time
+                assert self.previous_group.arrival_time
                 deltas = InterArrivalDelta(
                     timestamp=uint32_add(
                         self.current_group.last_timestamp,
@@ -244,6 +248,8 @@ class InterArrival:
         return deltas
 
     def belongs_to_burst(self, timestamp: int, arrival_time: int) -> bool:
+        assert self.current_group
+        assert self.current_group.arrival_time
         timestamp_delta = uint32_add(timestamp, -self.current_group.last_timestamp)
         timestamp_delta_ms = round(self.timestamp_to_ms * timestamp_delta)
         arrival_time_delta = arrival_time - self.current_group.arrival_time
@@ -253,6 +259,7 @@ class InterArrival:
         )
 
     def new_timestamp_group(self, timestamp: int, arrival_time: int) -> bool:
+        assert self.current_group
         if self.belongs_to_burst(timestamp, arrival_time):
             return False
         else:
@@ -260,6 +267,7 @@ class InterArrival:
             return timestamp_delta > self.group_length
 
     def packet_out_of_order(self, timestamp: int) -> bool:
+        assert self.current_group
         timestamp_delta = uint32_add(timestamp, -self.current_group.first_timestamp)
         return timestamp_delta >= 0x80000000
 
@@ -494,6 +502,7 @@ class RateCounter:
         self._total = RateBucket()
 
     def _erase_old(self, now_ms: int) -> None:
+        assert self._origin_ms
         new_origin_ms = now_ms - self._window_size + 1
         while self._origin_ms < new_origin_ms:
             bucket = self._buckets[self._origin_index]
