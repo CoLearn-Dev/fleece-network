@@ -1,4 +1,6 @@
 from abc import ABC, abstractmethod
+import asyncio
+import functools
 import inspect
 import anyio
 from anyio import Event, create_memory_object_stream, to_thread
@@ -6,7 +8,7 @@ from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 import logging
 import pickle
-from typing import Any, Callable, Coroutine, Generic, Optional, TypeVar
+from typing import Any, Callable, Coroutine, Optional, get_type_hints
 from aiortc import (  # type: ignore
     RTCPeerConnection,
     RTCConfiguration,
@@ -15,7 +17,7 @@ from aiortc import (  # type: ignore
     RTCSessionDescription,
 )
 from fastapi import HTTPException, Response
-from pydantic import BaseModel, validate_call
+from pydantic import BaseModel
 import websockets
 
 from peerrtc.messages import (
@@ -28,8 +30,8 @@ from peerrtc.messages import (
 
 logger = logging.getLogger(__name__)
 
-Handler = Callable[[BaseModel], Response]
-AsyncHandler = Callable[[BaseModel], Coroutine[Any, Any, Response]]
+Handler = Callable[[BaseModel], BaseModel]
+AsyncHandler = Callable[[BaseModel], Coroutine[Any, Any, BaseModel]]
 
 
 class Outward(ABC):
@@ -73,16 +75,18 @@ class Inward(ABC):
         if callback is not None:
             if not inspect.isfunction(callback):  # assertion
                 raise ValueError("Invalid callback type")
-
             try:
-                if inspect.iscoroutinefunction(callback):
-                    result = await ahandler(callback)
+                try:
+                    if inspect.iscoroutinefunction(callback):
+                        result = await ahandler(callback)
+                    else:
+                        result = await handler(callback)
+                except HTTPException as e:
+                    await self._send(id, Response(e.detail, e.status_code, e.headers))
                 else:
-                    result = await handler(callback)
-            except HTTPException as e:
-                await self._send(id, Response(e.detail, e.status_code, e.headers))
-            else:
-                await self._send(id, Response(result))
+                    await self._send(id, Response(result.model_dump_json()))
+            except Exception as e:
+                print(e)
 
 
 class Connection(ABC):
@@ -487,7 +491,7 @@ class Peer:
         self.ws: Optional[websockets.WebSocketClientProtocol] = None
         """The websocket connection to the signaling server. Use to send offer."""
 
-        self.hooks = {name: validate_call(hook) for name, hook in hooks.items()}
+        self.hooks = {name: Peer.jsonargs(hook) for name, hook in hooks.items()}
         """Every time a new channel is created by peer (not by our), this handler will be called."""
 
         self.tg = tg
@@ -499,6 +503,35 @@ class Peer:
         self.lock = anyio.Lock()
 
         self.tg.start_soon(self._register)
+
+    @staticmethod
+    def jsonargs(
+        func: Callable[..., Any]
+    ) -> Callable[..., Any | Coroutine[Any, Any, Any]]:
+        @functools.wraps(func)
+        def wrapper(*args: Any) -> Any | Coroutine[Any, Any, Any]:
+            signature = inspect.signature(func)
+            type_hints = get_type_hints(func)
+
+            parsed_args = []
+            for param_name, arg in zip(signature.parameters, args):
+                model_cls = type_hints[param_name]
+                if isinstance(arg, (str, bytes)):
+                    parsed_arg = model_cls.parse_raw(arg)
+                else:
+                    parsed_arg = arg
+                parsed_args.append(parsed_arg)
+            return func(*parsed_args)
+
+        if asyncio.iscoroutinefunction(func):
+
+            @functools.wraps(func)
+            async def async_wrapper(*args: Any) -> Any:
+                return await wrapper(*args)
+
+            return async_wrapper
+        else:
+            return wrapper
 
     async def _answer(
         self, ws: websockets.WebSocketClientProtocol, request: ConnectRequest
