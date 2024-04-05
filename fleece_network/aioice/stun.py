@@ -7,6 +7,7 @@ from collections import OrderedDict
 from struct import pack, unpack
 from typing import Callable, Dict, List, Optional, Tuple
 
+from ..aioice.ice import SendStun
 from .utils import random_transaction_id
 
 COOKIE = 0x2112A442
@@ -271,7 +272,7 @@ class Transaction:
         self,
         request: Message,
         addr: Tuple[str, int],
-        protocol,
+        protocol: SendStun,
         retransmissions: Optional[int] = None,
     ) -> None:
         self.__addr = addr

@@ -1,3 +1,4 @@
+from abc import abstractmethod
 import asyncio
 import copy
 import enum
@@ -8,7 +9,7 @@ import secrets
 import socket
 import threading
 from itertools import count
-from typing import Dict, List, Optional, Set, Text, Tuple, Union, cast
+from typing import Dict, List, Optional, Protocol, Set, Text, Tuple, Union, cast
 
 import ifaddr
 
@@ -150,7 +151,7 @@ class CandidatePair:
     def __init__(self, protocol, remote_candidate: Candidate) -> None:
         self.task: Optional[asyncio.Task] = None
         self.nominated = False
-        self.protocol = protocol
+        self.protocol: StunProtocol = protocol
         self.remote_candidate = remote_candidate
         self.remote_nominated = False
         self.state = CandidatePair.State.FROZEN
@@ -168,6 +169,7 @@ class CandidatePair:
 
     @property
     def local_candidate(self) -> Candidate:
+        assert self.protocol.local_candidate
         return self.protocol.local_candidate
 
     @property
@@ -180,6 +182,11 @@ class CandidatePair:
         IN_PROGRESS = 2
         SUCCEEDED = 3
         FAILED = 4
+
+
+class SendStun(Protocol):
+    @abstractmethod
+    def send_stun(self, message: stun.Message, addr: Tuple[str, int]) -> None: ...
 
 
 class StunProtocol(asyncio.DatagramProtocol):
