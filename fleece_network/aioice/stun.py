@@ -1,3 +1,4 @@
+from abc import abstractmethod
 import asyncio
 import binascii
 import enum
@@ -5,9 +6,8 @@ import hmac
 import ipaddress
 from collections import OrderedDict
 from struct import pack, unpack
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Protocol, Tuple
 
-from ..aioice.ice import SendStun
 from .utils import random_transaction_id
 
 COOKIE = 0x2112A442
@@ -265,6 +265,11 @@ class TransactionFailed(TransactionError):
 class TransactionTimeout(TransactionError):
     def __str__(self) -> str:
         return "STUN transaction timed out"
+
+
+class SendStun(Protocol):
+    @abstractmethod
+    def send_stun(self, message: Message, addr: Tuple[str, int]) -> None: ...
 
 
 class Transaction:
