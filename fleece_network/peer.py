@@ -306,13 +306,16 @@ class PeerConnection(Connection):
         self.lock = anyio.Lock()
         self.condition = anyio.Condition(self.lock)
 
-    async def _kill_inner(self):
+    def _reset_inner(self):
         self.state = PeerConnection.State.DEAD
-        if self.inner is not None:
-            await self.inner.close()
-            self.inner = None
         self.in_channel = None
         self.out_channel = None
+
+    async def _kill_inner(self):
+        self._reset_inner()
+        if self.inner is not None:
+            self.tg.start_soon(self.inner.close)
+            self.inner = None
 
     async def _init_inner(self) -> RTCPeerConnection:
         pc = RTCPeerConnection(
@@ -342,8 +345,8 @@ class PeerConnection(Connection):
                         self.from_id,
                         self.to_id,
                     )
-                elif pc.connectionState == "failed":
-                    await self._kill_inner()
+                elif pc.connectionState == "failed" or pc.connectionState == "closed":
+                    await self._reset_inner()
 
                     self._logger.info(
                         "Connection (%s, %s) changes state to FAILED",
