@@ -1,16 +1,18 @@
+import logging
+import logging.config
+
+logging.config.fileConfig("logging.conf")
+logger = logging.getLogger(__name__)
+
+import sys
 import asyncio
 from typing import Any
 from anyio import create_task_group
 from pydantic import BaseModel
 import toml
-import logging
-import logging.config
 import aioconsole  # type: ignore
 import time
 from fleece_network.peer import Peer
-
-logging.config.fileConfig("logging.conf")
-logger = logging.getLogger(__name__)
 
 
 class Message(BaseModel):
@@ -41,7 +43,7 @@ async def delegator(peer: Peer):
 
 
 async def main():
-    config = toml.load("config.toml")
+    config = toml.load(sys.argv[1])
 
     async def echo(data: Message) -> Message:
         return data

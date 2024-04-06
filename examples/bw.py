@@ -1,3 +1,4 @@
+import sys
 import anyio
 from anyio import create_task_group
 from typing import Any
@@ -66,7 +67,7 @@ async def delegator(peer: Peer, test: SpeedTest):
 
 
 async def main():
-    config = toml.load("config.toml")
+    config = toml.load(sys.argv[1])
     test = SpeedTest()
 
     async def sum(message: Message):
