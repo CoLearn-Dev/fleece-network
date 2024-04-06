@@ -18,7 +18,7 @@ from typing import (
     Union,
     get_type_hints,
 )
-from aiortc import (  # type: ignore
+from .aiortc import (  # type: ignore
     RTCPeerConnection,
     RTCConfiguration,
     RTCIceServer,

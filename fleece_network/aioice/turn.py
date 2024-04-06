@@ -1,3 +1,4 @@
+import traceback
 import asyncio
 import hashlib
 import logging
@@ -181,18 +182,19 @@ class TurnClientMixin:
             self.refresh_task.cancel()
             self.refresh_task = None
 
-        request = stun.Message(
-            message_method=stun.Method.REFRESH, message_class=stun.Class.REQUEST
-        )
-        request.attributes["LIFETIME"] = 0
-        try:
-            await self.request_with_retry(request)
-        except stun.TransactionError:
-            # we do not care, we need to shutdown
-            pass
+            request = stun.Message(
+                message_method=stun.Method.REFRESH, message_class=stun.Class.REQUEST
+            )
+            request.attributes["LIFETIME"] = 0
+            try:
+                await self.request_with_retry(request)
+            except stun.TransactionError:
+                # we do not care, we need to shutdown
+                pass
 
-        logger.info("TURN allocation deleted %s", self.relayed_address)
-        self.transport.close()
+            logger.info("TURN allocation deleted %s", self.relayed_address)
+            # inner protocol itself does not need to close the outer transport
+            # because each transport has its unique inner protocol
 
     async def refresh(self, time_to_expiry) -> None:
         """
