@@ -545,7 +545,9 @@ class Peer:
             for param_name, arg in zip(signature.parameters, args):
                 model_cls = type_hints[param_name]
                 if isinstance(arg, (str, bytes)):
-                    parsed_arg = model_cls.parse_raw(arg)
+                    parsed_arg = model_cls.model_validate_json(arg)
+                elif isinstance(arg, dict):
+                    parsed_arg = model_cls.model_validate(arg)
                 else:
                     parsed_arg = arg
                 parsed_args.append(parsed_arg)
