@@ -105,6 +105,8 @@ class Inward(ABC):
                     await self._send(id, Response(result.model_dump_json()))
                 elif isinstance(result, str):
                     await self._send(id, Response(result))
+                elif result is None: 
+                    await self._send(id, Response())
                 else:  # assertion
                     raise ValueError("Invalid result type")
 
@@ -346,7 +348,7 @@ class PeerConnection(Connection):
                         self.to_id,
                     )
                 elif pc.connectionState == "failed" or pc.connectionState == "closed":
-                    await self._reset_inner()
+                    self._reset_inner()
 
                     self._logger.info(
                         "Connection (%s, %s) changes state to FAILED",
