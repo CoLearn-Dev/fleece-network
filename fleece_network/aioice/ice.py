@@ -23,7 +23,7 @@ ICE_COMPLETED = 1
 ICE_FAILED = 2
 
 CONSENT_DELAY = 0.4
-CONSENT_ALPHA = 0.9
+CONSENT_ALPHA = 0.8
 CONSENT_FAILURES = 3
 CONSENT_INTERVAL = 5
 
@@ -1021,18 +1021,20 @@ class Connection:
                         retransmissions=0,
                         delay=delay * 2,
                     )
-                    end = time.time()
+                    delta = time.time() - begin
                     failures = 0
                 except stun.TransactionError:
+                    delta = 2 * delay
                     failures += 1
-                    self.__log_info("Fail with consent delay %s", delay)
+                    self.__log_info("Fail with consent delay %s, %s", delay, delta)
                 if failures >= CONSENT_FAILURES:
                     self.__log_info("Consent to send expired")
                     self._query_consent_task = None
                     return await self.close()
 
                 # adjust adaptive delay
-                delay = delay * alpha + (1 - alpha) * (end - begin)
+                delay = max(delay * alpha + (1 - alpha) * delta, CONSENT_DELAY)
+                self.__log_info("Delay %s, delta %s", delay, delta)
 
     def data_received(self, data: bytes, component: int) -> None:
         self._queue.put_nowait((data, component))
