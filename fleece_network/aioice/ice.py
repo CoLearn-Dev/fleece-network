@@ -8,6 +8,7 @@ import secrets
 import socket
 import threading
 from itertools import count
+import time
 from typing import Dict, List, Optional, Set, Text, Tuple, Union, cast
 
 import ifaddr
@@ -21,7 +22,9 @@ logger = logging.getLogger(__name__)
 ICE_COMPLETED = 1
 ICE_FAILED = 2
 
-CONSENT_FAILURES = 6
+CONSENT_DELAY = 0.4
+CONSENT_ALPHA = 0.9
+CONSENT_FAILURES = 3
 CONSENT_INTERVAL = 5
 
 connection_id = count()
@@ -240,6 +243,7 @@ class StunProtocol(asyncio.DatagramProtocol):
         addr: Tuple[str, int],
         integrity_key: Optional[bytes] = None,
         retransmissions=None,
+        delay=None,
     ) -> Tuple[stun.Message, Tuple[str, int]]:
         """
         Execute a STUN transaction and return the response.
@@ -250,7 +254,7 @@ class StunProtocol(asyncio.DatagramProtocol):
             request.add_message_integrity(integrity_key)
 
         transaction = stun.Transaction(
-            request, addr, self, retransmissions=retransmissions
+            request, addr, self, retransmissions=retransmissions, delay=delay
         )
         self.transactions[request.transaction_id] = transaction
         try:
@@ -999,6 +1003,8 @@ class Connection:
         Periodically check consent (RFC 7675).
         """
         failures = 0
+        delay = CONSENT_DELAY
+        alpha = CONSENT_ALPHA
         while True:
             # randomize between 0.8 and 1.2 times CONSENT_INTERVAL
             await asyncio.sleep(CONSENT_INTERVAL * (0.8 + 0.4 * random.random()))
@@ -1007,19 +1013,26 @@ class Connection:
                 request = self.build_request(pair, nominate=False)
                 try:
                     assert self.remote_password
+                    begin = time.time()
                     await pair.protocol.request(
                         request,
                         pair.remote_addr,
                         integrity_key=self.remote_password.encode("utf8"),
                         retransmissions=0,
+                        delay=delay * 2,
                     )
+                    end = time.time()
                     failures = 0
                 except stun.TransactionError:
                     failures += 1
+                    self.__log_info("Fail with consent delay %s", delay)
                 if failures >= CONSENT_FAILURES:
                     self.__log_info("Consent to send expired")
                     self._query_consent_task = None
                     return await self.close()
+
+                # adjust adaptive delay
+                delay = delay * alpha + (1 - alpha) * (end - begin)
 
     def data_received(self, data: bytes, component: int) -> None:
         self._queue.put_nowait((data, component))

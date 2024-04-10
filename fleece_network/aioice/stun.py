@@ -6,6 +6,7 @@ import hmac
 import ipaddress
 from collections import OrderedDict
 from struct import pack, unpack
+import time
 from typing import Callable, Dict, List, Optional, Protocol, Tuple
 
 from .utils import random_transaction_id
@@ -279,13 +280,14 @@ class Transaction:
         addr: Tuple[str, int],
         protocol: SendStun,
         retransmissions: Optional[int] = None,
+        delay: Optional[float] = None,
     ) -> None:
         self.__addr = addr
         self.__future: asyncio.Future[Tuple[Message, Tuple[str, int]]] = (
             asyncio.Future()
         )
         self.__request = request
-        self.__timeout_delay = RETRY_RTO
+        self.__timeout_delay = delay if delay else RETRY_RTO
         self.__timeout_handle: Optional[asyncio.TimerHandle] = None
         self.__protocol = protocol
         self.__tries = 0
