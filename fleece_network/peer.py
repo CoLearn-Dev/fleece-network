@@ -105,7 +105,7 @@ class Inward(ABC):
                     await self._send(id, Response(result.model_dump_json()))
                 elif isinstance(result, str):
                     await self._send(id, Response(result))
-                elif result is None: 
+                elif result is None:
                     await self._send(id, Response())
                 else:  # assertion
                     raise ValueError("Invalid result type")
@@ -131,9 +131,7 @@ class OutwardDataChannel(Outward):
             self._logger.info("Outward data channel %s opens", self.label())
 
         async def on_message(raw: bytes):
-            self._logger.info(
-                "Outward data channel %s receives message: %s", self.label(), raw
-            )
+            self._logger.info("Outward data channel %s receives message", self.label())
             reply: SimpleReply = pickle.loads(raw)
             async with self.lock:
                 send_stream = self.map.pop(reply.id)
@@ -157,9 +155,7 @@ class OutwardDataChannel(Outward):
             self.counter += 1
             self.map[id] = send_stream
         self.channel.send(pickle.dumps(SimpleRequest(id, op, data)))
-        self._logger.info(
-            "Outward data channel %s sends message: %s %s", self.label(), op, data
-        )
+        self._logger.info("Outward data channel %s sends message: %s", self.label(), op)
         return await recv_stream.receive()
 
     def close(self):
@@ -196,7 +192,7 @@ class InwardDataChannel(Inward):
     async def _send(self, id: int, reply: Response):
         """Although it's not an async function, it requires the existence of an event loop."""
 
-        self._logger.info("Channel %s sends message: %s", self.label(), reply)
+        self._logger.info("Inward data channel %s sends message", self.label())
         self.channel.send(pickle.dumps(SimpleReply(id, reply)))
 
 
@@ -227,6 +223,9 @@ class OutwardLoopback(Outward):
                 async with self.lock:
                     send_stream = self.map.pop(id)
                 tg.start_soon(send_stream.send, reply)
+                self._logger.info(
+                    "Outward data channel %s receives message", self.label()
+                )
 
         tg.start_soon(onmessage)
 
@@ -240,6 +239,7 @@ class OutwardLoopback(Outward):
             self.counter += 1
             self.map[id] = send_stream
         await self.send_stream.send((id, op, data))
+        self._logger.info("Outward data channel %s sends message: %s", self.label(), op)
         return await recv_stream.receive()
 
     def close(self):
@@ -275,7 +275,7 @@ class InwardLoopback(Inward):
         """Although it's not an async function, it requires the existence of an event loop."""
 
         await self.send_stream.send((id, reply))
-        self._logger.info("Channel %s sends message: %s", self.label(), reply)
+        self._logger.info("Inward data channel %s sends message", self.label())
 
 
 class PeerConnection(Connection):
