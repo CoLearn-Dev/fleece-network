@@ -498,9 +498,15 @@ class InboundStream:
     def __init__(self) -> None:
         self.reassembly: List[DataChunk] = []
         self.sequence_number = 0
+        self.has_last = False
+    
+    def check_last(self, flags: int): 
+        if flags & SCTP_DATA_LAST_FRAG: 
+            self.has_last = True 
 
     def add_chunk(self, chunk: DataChunk) -> None:
         if not self.reassembly or uint32_gt(chunk.tsn, self.reassembly[-1].tsn):
+            self.check_last(chunk.flags)
             self.reassembly.append(chunk)
             return
 
@@ -510,10 +516,13 @@ class InboundStream:
             assert rchunk.tsn != chunk.tsn, "duplicate chunk in reassembly"
 
             if uint32_gt(rchunk.tsn, chunk.tsn):
+                self.check_last(chunk.flags)
                 self.reassembly.insert(i, chunk)
                 break
 
     def pop_messages(self) -> Iterator[Tuple[int, int, bytes]]:
+        if not self.has_last: 
+            return 
         pos = 0
         start_pos = None
         while pos < len(self.reassembly):
@@ -553,6 +562,8 @@ class InboundStream:
                 pos += 1
 
             expected_tsn = tsn_plus_one(expected_tsn)
+        
+        self.has_last = False
 
     def prune_chunks(self, tsn: int) -> int:
         """
