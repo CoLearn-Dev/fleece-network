@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "fleece-network"
-version = "0.2.0rc2"
+version = "0.2.0rc3"
 description = "P2P socket built on aiortc."
 authors = ["Linyu Wu <celve03@gmail.com>"]
 readme = "README.md"
