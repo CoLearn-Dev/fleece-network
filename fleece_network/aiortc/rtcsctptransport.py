@@ -22,7 +22,7 @@ from typing import (
     no_type_check,
 )
 
-from google_crc32c import value as crc32c # type: ignore
+from google_crc32c import value as crc32c  # type: ignore
 from pyee.asyncio import AsyncIOEventEmitter
 
 from .exceptions import InvalidStateError
@@ -499,10 +499,10 @@ class InboundStream:
         self.reassembly: List[DataChunk] = []
         self.sequence_number = 0
         self.has_last = False
-    
-    def check_last(self, flags: int): 
-        if flags & SCTP_DATA_LAST_FRAG: 
-            self.has_last = True 
+
+    def check_last(self, flags: int):
+        if flags & SCTP_DATA_LAST_FRAG:
+            self.has_last = True
 
     def add_chunk(self, chunk: DataChunk) -> None:
         if not self.reassembly or uint32_gt(chunk.tsn, self.reassembly[-1].tsn):
@@ -521,8 +521,8 @@ class InboundStream:
                 break
 
     def pop_messages(self) -> Iterator[Tuple[int, int, bytes]]:
-        if not self.has_last: 
-            return 
+        if not self.has_last:
+            return
         pos = 0
         start_pos = None
         while pos < len(self.reassembly):
@@ -562,7 +562,7 @@ class InboundStream:
                 pos += 1
 
             expected_tsn = tsn_plus_one(expected_tsn)
-        
+
         self.has_last = False
 
     def prune_chunks(self, tsn: int) -> int:
@@ -969,7 +969,7 @@ class RTCSctpTransport(AsyncIOEventEmitter):
             for param in chunk.params:
                 cls = RECONFIG_PARAM_TYPES.get(param[0])
                 if cls:
-                    await self._receive_reconfig_param(cls.parse(param[1])) # type: ignore
+                    await self._receive_reconfig_param(cls.parse(param[1]))  # type: ignore
 
         # server
         elif isinstance(chunk, InitChunk) and self.is_server:

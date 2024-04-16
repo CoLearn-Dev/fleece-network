@@ -6,8 +6,7 @@ import logging
 import os
 import traceback
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Type, TypeVar
-import pylibsrtp
+from typing import List, Optional, Type, TypeVar
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
@@ -21,18 +20,6 @@ if TYPE_CHECKING:
 
 from . import clock, rtp
 from .rtcicetransport import RTCIceTransport
-from .rtcrtpparameters import RTCRtpReceiveParameters, RTCRtpSendParameters
-from .rtp import (
-    AnyRtcpPacket,
-    RtcpByePacket,
-    RtcpPacket,
-    RtcpPsfbPacket,
-    RtcpRrPacket,
-    RtcpRtpfbPacket,
-    RtcpSrPacket,
-    RtpPacket,
-    is_rtcp,
-)
 from .stats import RTCStatsReport, RTCTransportStats
 
 CERTIFICATE_T = TypeVar("CERTIFICATE_T", bound="RTCCertificate")

@@ -1,17 +1,14 @@
 import asyncio
-import copy
 import logging
 import uuid
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any, Dict, List, Optional, Set
 
 from pyee.asyncio import AsyncIOEventEmitter
 
-from . import clock, rtp, sdp
+from . import clock, sdp
 from .exceptions import (
     InternalError,
-    InvalidAccessError,
     InvalidStateError,
-    OperationError,
 )
 from .rtcconfiguration import RTCConfiguration
 from .rtcdatachannel import RTCDataChannel, RTCDataChannelParameters
@@ -23,18 +20,10 @@ from .rtcicetransport import (
     RTCIceTransport,
 )
 from .rtcrtpparameters import (
-    RTCRtpCodecCapability,
-    RTCRtpCodecParameters,
-    RTCRtpDecodingParameters,
     RTCRtpHeaderExtensionParameters,
-    RTCRtpParameters,
-    RTCRtpReceiveParameters,
-    RTCRtpRtxParameters,
-    RTCRtpSendParameters,
 )
 from .rtcsctptransport import RTCSctpTransport
 from .rtcsessiondescription import RTCSessionDescription
-from .stats import RTCStatsReport
 
 DISCARD_HOST = "0.0.0.0"
 DISCARD_PORT = 9
