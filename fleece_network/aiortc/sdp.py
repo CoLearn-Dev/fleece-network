@@ -390,7 +390,6 @@ class SessionDescription:
 
         # parse session
         session = cls()
-        print(session_lines, media_groups)
         for line in session_lines:
             if line.startswith("v="):
                 session.version = int(line.strip()[2:])

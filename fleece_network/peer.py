@@ -614,8 +614,6 @@ class Peer:
                                 self.tg.start_soon(self._answer, ws, message)
                             elif isinstance(message, ConnectReply):
                                 self.tg.start_soon(self._resolve, message)
-
-                                pass
                             else:
                                 self._logger.error(
                                     "Unknown message type %s",
