@@ -4,9 +4,9 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from ..aioice import Candidate, Connection, ConnectionClosed
 from pyee.asyncio import AsyncIOEventEmitter
 
+from ..aioice import Candidate, Connection, ConnectionClosed
 from .exceptions import InvalidStateError
 from .rtcconfiguration import RTCIceServer
 

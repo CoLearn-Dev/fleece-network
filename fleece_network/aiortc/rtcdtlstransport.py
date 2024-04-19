@@ -6,14 +6,14 @@ import logging
 import os
 import traceback
 from dataclasses import dataclass, field
-from typing import List, Optional, Type, TypeVar
+from typing import TYPE_CHECKING, List, Optional, Type, TypeVar
+
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from OpenSSL import SSL, crypto
 from pyee.asyncio import AsyncIOEventEmitter
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .rtcsctptransport import RTCSctpTransport

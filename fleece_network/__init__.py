@@ -1,1 +1,1 @@
-from .peer import Peer, Connection
+from .peer import Connection, Peer

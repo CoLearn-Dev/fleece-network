@@ -7,13 +7,10 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from . import rtp
 from .rtcdtlstransport import RTCDtlsFingerprint, RTCDtlsParameters
 from .rtcicetransport import RTCIceCandidate, RTCIceParameters
-from .rtcrtpparameters import (
-    ParametersDict,
-    RTCRtcpFeedback,
-    RTCRtpCodecParameters,
-    RTCRtpHeaderExtensionParameters,
-    RTCRtpParameters,
-)
+from .rtcrtpparameters import (ParametersDict, RTCRtcpFeedback,
+                               RTCRtpCodecParameters,
+                               RTCRtpHeaderExtensionParameters,
+                               RTCRtpParameters)
 from .rtcsctptransport import RTCSctpCapabilities
 
 DIRECTIONS = ["inactive", "sendonly", "recvonly", "sendrecv"]

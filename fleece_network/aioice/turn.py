@@ -1,22 +1,12 @@
-import traceback
 import asyncio
 import hashlib
 import logging
 import socket
 import struct
 import time
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    List,
-    Optional,
-    Text,
-    Tuple,
-    TypeVar,
-    Union,
-    cast,
-)
+import traceback
+from typing import (Any, Callable, Dict, List, Optional, Text, Tuple, TypeVar,
+                    Union, cast)
 
 from . import stun
 from .utils import random_transaction_id

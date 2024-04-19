@@ -1,12 +1,12 @@
-from abc import abstractmethod
 import asyncio
 import binascii
 import enum
 import hmac
 import ipaddress
+import time
+from abc import abstractmethod
 from collections import OrderedDict
 from struct import pack, unpack
-import time
 from typing import Callable, Dict, List, Optional, Protocol, Tuple
 
 from .utils import random_transaction_id

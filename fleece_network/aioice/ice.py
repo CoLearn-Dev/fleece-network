@@ -7,8 +7,8 @@ import random
 import secrets
 import socket
 import threading
-from itertools import count
 import time
+from itertools import count
 from typing import Dict, List, Optional, Set, Text, Tuple, Union, cast
 
 import ifaddr

@@ -8,19 +8,8 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from struct import pack, unpack_from
-from typing import (
-    Any,
-    Callable,
-    Deque,
-    Dict,
-    Iterator,
-    List,
-    Optional,
-    Set,
-    Tuple,
-    cast,
-    no_type_check,
-)
+from typing import (Any, Callable, Deque, Dict, Iterator, List, Optional, Set,
+                    Tuple, cast, no_type_check)
 
 from google_crc32c import value as crc32c  # type: ignore
 from pyee.asyncio import AsyncIOEventEmitter

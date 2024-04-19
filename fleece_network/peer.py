@@ -1,41 +1,25 @@
-from abc import ABC, abstractmethod
 import asyncio
 import functools
 import inspect
-import anyio
-from anyio import Event, create_memory_object_stream, to_thread
-from anyio.abc import TaskGroup
-from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 import logging
 import pickle
-from typing import (
-    Any,
-    Callable,
-    Coroutine,
-    Optional,
-    Protocol,
-    TypeVar,
-    Union,
-    get_type_hints,
-)
-from .aiortc import (  # type: ignore
-    RTCPeerConnection,
-    RTCConfiguration,
-    RTCIceServer,
-    RTCDataChannel,
-    RTCSessionDescription,
-)
+from abc import ABC, abstractmethod
+from typing import (Any, Callable, Coroutine, Optional, Protocol, TypeVar,
+                    Union, get_type_hints)
+
+import anyio
+import websockets
+from anyio import Event, create_memory_object_stream, to_thread
+from anyio.abc import TaskGroup
+from anyio.streams.memory import (MemoryObjectReceiveStream,
+                                  MemoryObjectSendStream)
 from fastapi import HTTPException, Response
 from pydantic import BaseModel
-import websockets
 
-from .messages import (
-    ConnectReply,
-    ConnectRequest,
-    SimpleReply,
-    SimpleRequest,
-    RegisterRequest,
-)
+from .aiortc import (RTCConfiguration, RTCDataChannel,  # type: ignore
+                     RTCIceServer, RTCPeerConnection, RTCSessionDescription)
+from .messages import (ConnectReply, ConnectRequest, RegisterRequest,
+                       SimpleReply, SimpleRequest)
 
 logger = logging.getLogger(__name__)
 

@@ -1,15 +1,13 @@
 import asyncio
-import uvicorn
 import logging
 import pickle
 from typing import Dict
+
+import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from .messages import (
-    ConnectReply,
-    ConnectRequest,
-    RegisterReply,
-    RegisterRequest,
-)
+
+from .messages import (ConnectReply, ConnectRequest, RegisterReply,
+                       RegisterRequest)
 
 
 class Signaling:
