@@ -4,22 +4,39 @@ import inspect
 import logging
 import pickle
 from abc import ABC, abstractmethod
-from typing import (Any, Callable, Coroutine, Optional, Protocol, TypeVar,
-                    Union, get_type_hints)
+from typing import (
+    Any,
+    Callable,
+    Coroutine,
+    Optional,
+    Protocol,
+    TypeVar,
+    Union,
+    get_type_hints,
+)
 
 import anyio
 import websockets
 from anyio import Event, create_memory_object_stream, to_thread
 from anyio.abc import TaskGroup
-from anyio.streams.memory import (MemoryObjectReceiveStream,
-                                  MemoryObjectSendStream)
+from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from fastapi import HTTPException, Response
 from pydantic import BaseModel
 
-from .aiortc import (RTCConfiguration, RTCDataChannel,  # type: ignore
-                     RTCIceServer, RTCPeerConnection, RTCSessionDescription)
-from .messages import (ConnectReply, ConnectRequest, RegisterRequest,
-                       SimpleReply, SimpleRequest)
+from .aiortc import (  # type: ignore
+    RTCConfiguration,
+    RTCDataChannel,
+    RTCIceServer,
+    RTCPeerConnection,
+    RTCSessionDescription,
+)
+from .messages import (
+    ConnectReply,
+    ConnectRequest,
+    RegisterRequest,
+    SimpleReply,
+    SimpleRequest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +46,7 @@ class Encodable(Protocol):
     def encode(self, charset: str) -> bytes: ...
 
 
-P = TypeVar("P", bound=BaseModel)
+P = TypeVar("P", bound=BaseModel | bytes) 
 E = TypeVar("E", bound=Encodable)
 R = Union[E, str]
 SyncHandler = Callable[[P], R]
@@ -530,13 +547,16 @@ class Peer:
             parsed_args = []
             for param_name, arg in zip(signature.parameters, args):
                 model_cls = type_hints[param_name]
-                if isinstance(arg, (str, bytes)):
-                    parsed_arg = model_cls.model_validate_json(arg)
-                elif isinstance(arg, dict):
-                    parsed_arg = model_cls.model_validate(arg)
+                if issubclass(model_cls, BaseModel):
+                    if isinstance(arg, (str, bytes)):
+                        parsed_arg = model_cls.model_validate_json(arg)
+                    elif isinstance(arg, dict):
+                        parsed_arg = model_cls.model_validate(arg)
+                    else:
+                        parsed_arg = arg
+                    parsed_args.append(parsed_arg)
                 else:
-                    parsed_arg = arg
-                parsed_args.append(parsed_arg)
+                    parsed_args.append(arg)
             return func(*parsed_args)
 
         if asyncio.iscoroutinefunction(func):
