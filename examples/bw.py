@@ -1,19 +1,21 @@
-import sys
-import anyio
-from anyio import create_task_group
-from typing import Any
-from pydantic import BaseModel
-import toml
 import logging
 import logging.config
-import aioconsole  # type: ignore
+import sys
 import time
+from typing import Any
+
+import aioconsole  # type: ignore
+import anyio
+import toml
+from anyio import create_task_group
+from pydantic import BaseModel
+
 from fleece_network.peer import Peer
 
 logging.config.fileConfig("logging.conf")
 logger = logging.getLogger(__name__)
 
-size = 16384
+size = 1200 * 1024
 content = "a" * size
 
 
@@ -49,14 +51,14 @@ async def delegator(peer: Peer, test: SpeedTest):
                 channel = await peer.connect(args[0])
             elif op == "send":
                 if channel is not None:
-                    await channel.send("rtt", Message(data="start"))
+                    await channel.send("rtt", b"start")
                     test.start()
 
-                    for _ in range(100):
-                        await channel.send("rtt", Message(data=content))
+                    for _ in range(10):
+                        await channel.send("rtt", content.encode())
                         test.go(size)
 
-                    await channel.send("rtt", Message(data="end"))
+                    await channel.send("rtt", b"ends")
                     logger.warning("Bandwidth: %s MB/s", test.end() / 1024 / 1024)
                 else:
                     logger.warning("No channel")
@@ -70,10 +72,10 @@ async def main():
     config = toml.load(sys.argv[1])
     test = SpeedTest()
 
-    async def sum(message: Message):
-        if message.data == "start":
+    async def sum(message: bytes):
+        if message == b"start":
             test.start()
-        elif message.data == "end":
+        elif message == b"end":
             logger.warning("Bandwidth: %s MB/s", test.end() / 1024 / 1024)
         else:
             test.go(size)
