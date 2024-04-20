@@ -7,9 +7,21 @@ import os
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from queue import PriorityQueue
 from struct import pack, unpack_from
-from typing import (Any, Callable, Deque, Dict, Iterator, List, Optional, Set,
-                    Tuple, cast, no_type_check)
+from typing import (
+    Any,
+    Callable,
+    Deque,
+    Dict,
+    Iterator,
+    List,
+    Optional,
+    Set,
+    Tuple,
+    cast,
+    no_type_check,
+)
 
 from google_crc32c import value as crc32c  # type: ignore
 from pyee.asyncio import AsyncIOEventEmitter
@@ -520,17 +532,17 @@ class InboundStream:
                 ordered = not (chunk.flags & SCTP_DATA_UNORDERED)
                 if not (chunk.flags & SCTP_DATA_FIRST_FRAG):
                     if ordered:
-                        break
+                        return 
                     else:
                         pos += 1
                         continue
                 if ordered and uint16_gt(chunk.stream_seq, self.sequence_number):
-                    break
+                    return
                 expected_tsn = chunk.tsn
                 start_pos = pos
             elif chunk.tsn != expected_tsn:
                 if ordered:
-                    break
+                    return
                 else:
                     start_pos = None
                     pos += 1
