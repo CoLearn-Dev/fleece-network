@@ -19,7 +19,7 @@ pip install -e .
 Run the signaling server by:
 
 ```bash
-python3 -m fleece_network.signaling
+python3 -m fleece_network.signaling --config latency.csv
 ```
 
 ## Network Test
