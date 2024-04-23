@@ -31,8 +31,10 @@ from .aiortc import (  # type: ignore
     RTCSessionDescription,
 )
 from .messages import (
+    AddLatencyRequest,
     ConnectReply,
     ConnectRequest,
+    DelLatencyRequest,
     RegisterRequest,
     SimpleReply,
     SimpleRequest,
@@ -64,6 +66,10 @@ class Outward(ABC):
 
     @abstractmethod
     def close(self):
+        pass
+
+    @abstractmethod
+    def set_latency(self, latency: Optional[float]):
         pass
 
 
@@ -111,21 +117,30 @@ class Inward(ABC):
                 else:  # assertion
                     raise ValueError("Invalid result type")
 
+    @abstractmethod
+    async def set_latency(self, latency: Optional[float]):
+        pass
+
 
 class Connection(ABC):
     @abstractmethod
     async def send(self, op: str, data: P) -> Response:
         pass
 
+    @abstractmethod
+    def set_latency(self, latency: Optional[float]):
+        pass
+
 
 class OutwardDataChannel(Outward):
-    def __init__(self, channel: RTCDataChannel):
+    def __init__(self, channel: RTCDataChannel, latency: Optional[float]):
         self._logger = logging.getLogger(self.__class__.__name__)
         self.channel = channel
         self.isopen = Event()
         self.lock = anyio.Lock()
         self.map: dict[int, MemoryObjectSendStream[Response]] = {}
         self.counter = 0
+        self.latency = latency
 
         def on_open():
             self.isopen.set()
@@ -149,6 +164,8 @@ class OutwardDataChannel(Outward):
         return self.channel.label
 
     async def send(self, op: str, data: P) -> Response:
+        if self.latency:
+            await anyio.sleep(self.latency)
         await self.isopen.wait()
         send_stream, recv_stream = create_memory_object_stream[Response]()
         async with self.lock:
@@ -162,16 +179,21 @@ class OutwardDataChannel(Outward):
     def close(self):
         self.channel.close()
 
+    def set_latency(self, latency: Optional[float]):
+        self.latency = latency
+
 
 class InwardDataChannel(Inward):
     def __init__(
         self,
         channel: RTCDataChannel,
         hooks: dict[str, SyncHandler | AsyncHandler],
+        latency: Optional[float],
     ):
         super().__init__(hooks)
         self._logger = logging.getLogger(self.__class__.__name__)
         self.channel = channel
+        self.latency = latency
 
         async def on_open():
             self._logger.info("Inward data channel opened: %s", self.label())
@@ -193,8 +215,14 @@ class InwardDataChannel(Inward):
     async def _send(self, id: int, reply: Response):
         """Although it's not an async function, it requires the existence of an event loop."""
 
+        if self.latency:
+            await anyio.sleep(self.latency)
+
         self._logger.info("Inward data channel %s sends message", self.label())
         self.channel.send(pickle.dumps(SimpleReply(id, reply)))
+
+    def set_latency(self, latency: Optional[float]):
+        self.latency = latency
 
 
 class OutwardLoopback(Outward):
@@ -247,6 +275,9 @@ class OutwardLoopback(Outward):
         self.send_stream.close()
         self.recv_stream.close()
 
+    def set_latency(self, latency: Optional[float]):
+        pass
+
 
 class InwardLoopback(Inward):
     def __init__(
@@ -278,6 +309,9 @@ class InwardLoopback(Inward):
         await self.send_stream.send((id, reply))
         self._logger.info("Inward data channel %s sends message", self.label())
 
+    def set_latency(self, latency: Optional[float]):
+        pass
+
 
 class PeerConnection(Connection):
     class State:
@@ -292,6 +326,7 @@ class PeerConnection(Connection):
         to_id: str,
         configs: list[tuple[str, Optional[str], Optional[str]]],
         hooks: dict[str, AsyncHandler | SyncHandler],
+        latency: Optional[float],
         tg: TaskGroup,
     ):
         self._logger = logging.getLogger(self.__class__.__name__)
@@ -300,6 +335,7 @@ class PeerConnection(Connection):
         self.configs = configs
         self.inner: Optional[RTCPeerConnection] = None  # changed with state
         self.hooks = hooks
+        self.latency = latency
         self.tg = tg
 
         self.state = PeerConnection.State.DEAD
@@ -329,12 +365,14 @@ class PeerConnection(Connection):
                 ]
             )
         )
-        self.out_channel = OutwardDataChannel(pc.createDataChannel(self.from_id))
+        self.out_channel = OutwardDataChannel(
+            pc.createDataChannel(self.from_id), self.latency
+        )
         self.inner = pc
 
         async def on_datachannel(channel: RTCDataChannel):
             async with self.lock:
-                self.in_channel = InwardDataChannel(channel, self.hooks)
+                self.in_channel = InwardDataChannel(channel, self.hooks, self.latency)
                 self._logger.info("Data channel created: %s", self.in_channel.label())
 
         async def on_connectionstatechange():
@@ -485,6 +523,15 @@ class PeerConnection(Connection):
 
         return await channel.send(op, data)
 
+    def set_latency(self, latency: Optional[float]):
+        self.latency = latency
+
+        # if the connection is dead or connecting, the latency will be set when the connection is established
+        if self.out_channel:
+            self.out_channel.set_latency(latency)
+        if self.in_channel:
+            self.in_channel.set_latency(latency)
+
 
 class SelfConnection(Connection):
     def __init__(
@@ -500,6 +547,9 @@ class SelfConnection(Connection):
 
     async def send(self, op: str, data: P) -> Response:
         return await self.out_loop.send(op, data)
+
+    def set_latency(self, latency: Optional[float]):
+        pass
 
 
 class Peer:
@@ -531,6 +581,7 @@ class Peer:
 
         self.conns: dict[str, PeerConnection] = {}
         self.lo = SelfConnection(worker_id, self.hooks, tg)
+        self.id2latencies: dict[str, float] = {}
         self.lock = anyio.Lock()
 
         self.tg.start_soon(self._register)
@@ -582,6 +633,7 @@ class Peer:
                     from_worker_id,
                     self.ice_configs,
                     self.hooks,
+                    self.id2latencies.get(from_worker_id),
                     self.tg,
                 )
             pc = self.conns[from_worker_id]
@@ -618,6 +670,17 @@ class Peer:
                                 self.tg.start_soon(self._answer, ws, message)
                             elif isinstance(message, ConnectReply):
                                 self.tg.start_soon(self._resolve, message)
+                            elif isinstance(message, AddLatencyRequest):
+                                self.id2latencies.update(message.uuid2latency)
+                                async with self.lock:
+                                    for uuid, latency in message.uuid2latency.items():
+                                        if uuid in self.conns:
+                                            self.conns[uuid].set_latency(latency)
+                            elif isinstance(message, DelLatencyRequest):
+                                self.id2latencies.pop(message.uuid)
+                                async with self.lock:
+                                    if message.uuid in self.conns:
+                                        self.conns[message.uuid].set_latency(None)
                             else:
                                 self._logger.error(
                                     "Unknown message type %s",
@@ -634,7 +697,12 @@ class Peer:
         async with self.lock:
             if to_worker_id not in self.conns:
                 self.conns[to_worker_id] = PeerConnection(
-                    self.worker_id, to_worker_id, self.ice_configs, self.hooks, self.tg
+                    self.worker_id,
+                    to_worker_id,
+                    self.ice_configs,
+                    self.hooks,
+                    self.id2latencies.get(to_worker_id),
+                    self.tg,
                 )
             pc = self.conns[to_worker_id]
 

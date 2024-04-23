@@ -18,6 +18,16 @@ class RegisterReply:
 
 
 @dataclass
+class AddLatencyRequest:
+    uuid2latency: dict[str, float]
+
+
+@dataclass
+class DelLatencyRequest:
+    uuid: str
+
+
+@dataclass
 class ConnectRequest:
     from_worker_id: str
     to_worker_id: str
