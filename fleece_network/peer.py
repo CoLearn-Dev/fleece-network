@@ -46,7 +46,7 @@ class Encodable(Protocol):
     def encode(self, charset: str) -> bytes: ...
 
 
-P = TypeVar("P", bound=BaseModel | bytes) 
+P = TypeVar("P", bound=BaseModel | bytes)
 E = TypeVar("E", bound=Encodable)
 R = Union[E, str]
 SyncHandler = Callable[[P], R]
