@@ -1,0 +1,28 @@
+[package]
+name = "fleece-network-python"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "fleece_network_rust"
+crate-type = ["cdylib"]
+
+[dependencies]
+bytes = "1.6.0"
+chrono = "0.4.38"
+crossbeam-channel = "0.5.12"
+dyn-clone = "1.0.17"
+fleece-network = { path = "../fleece-network" }
+futures = "0.3.30"
+libp2p = "0.53.2"
+pyo3 = { version = "0.21.2", features = ["extension-module"] }
+pyo3-log = "0.10.0"
+tokio = { version = "1.37.0", features = ["full"] }
+tower = { version = "0.4.13", features = ["util"] }
+
+[profile.bench]
+opt-level = 3
+strip = true
+debug = false
+codegen-units = 1
+lto = true

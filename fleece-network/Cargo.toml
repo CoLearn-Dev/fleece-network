@@ -1,0 +1,39 @@
+[package]
+name = "fleece-network"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-std = "1.12.0"
+async-trait = "0.1.80"
+bincode = "1.3.3"
+bytes = { version = "1.6.0", features = ["serde"] }
+chrono = "0.4.38"
+crossbeam-channel = "0.5.12"
+either = "1.11.0"
+env_logger = "0.11.3"
+futures = "0.3.30"
+futures-bounded = "0.2.3"
+libp2p = { version = "0.53.2", features = ["full"] }
+libp2p-mplex = "0.41.0"
+libp2p-request-response = "0.26.2"
+libp2p-stream = "0.1.0-alpha"
+libp2p-swarm = { version = "0.44.2", features = ["tokio"] }
+log = "0.4.21"
+serde = { version = "1.0.199", features = ["derive"] }
+smallvec = "1.13.2"
+sync_wrapper = "1.0.1"
+thiserror = "1.0.59"
+tokio = { version = "1.37.0", features = ["full"] }
+tower = { version = "0.4.13", features = ["util"] }
+tracing = "0.1.40"
+tracing-flame = "0.2.0"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+void = "1.0.2"
+
+[profile.bench]
+opt-level = 3
+strip = true
+debug = false
+codegen-units = 1
+lto = true

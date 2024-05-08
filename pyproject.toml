@@ -1,0 +1,28 @@
+[tool.poetry]
+name = "fleece-network"
+version = "0.2.2"
+description = "P2P socket built on aiortc."
+authors = ["Linyu Wu <celve03@gmail.com>"]
+readme = "README.md"
+packages = [{ include = "fleece_network" }]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+uvicorn = "^0.29.0"
+websockets = "^12.0"
+toml = "^0.10.2"
+aioconsole = "^0.7.0"
+fastapi = "^0.110.1"
+pydantic = "^2.6.4"
+anyio = "^4.3.0"
+pyopenssl = "^24.1.0"
+pyee = "^11.1.0"
+google-crc32c = "^1.5.0"
+dnspython = "^2.6.1"
+ifaddr = "^0.2.0"
+safetensors = "^0.4.3"
+torch = "^2.2.2"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
