@@ -3,11 +3,11 @@ use std::{str::FromStr, thread};
 use bytes::Bytes;
 use chrono::Local;
 use crossbeam_channel::bounded;
-use fleece_network::peer::{
-    codec,
-    proxy::{Instruct, Proxy},
+use fleece_network::{
+    channel::InboundRequestId,
+    peer::{codec, eventloop::Command, proxy::Proxy},
 };
-use libp2p::{request_response::InboundRequestId, PeerId};
+use libp2p::PeerId;
 use pyo3::prelude::*;
 use tokio::sync::oneshot;
 
@@ -39,36 +39,6 @@ impl PyProxyBuilder {
         this.self_addr = Some(addr);
         this
     }
-
-    // fn route(mut this: PyRefMut<'_, Self>, route: String, handler: PyObject) -> PyRefMut<'_, Self> {
-    //     let handler = move |req: codec::Request| {
-    //         let handler = handler.clone();
-    //         async move {
-    //             tokio::task::spawn_blocking(move || {
-    //                 Python::with_gil(|py| {
-    //                     let bytes = PyBytes::new_bound(py, &req.payload);
-    //                     let response: PyCodecResponse =
-    //                         handler.call1(py, (bytes,)).unwrap().extract(py).unwrap();
-    //                     Ok(codec::Response::new(
-    //                         response.status,
-    //                         Bytes::from(response.payload),
-    //                     ))
-    //                 })
-    //             })
-    //             .await
-    //             .unwrap()
-    //         }
-    //     };
-    //     if this.handlers.is_none() {
-    //         this.handlers = Some(Handler::new());
-    //     }
-    //     this.handlers
-    //         .as_mut()
-    //         .unwrap()
-    //         .add(route, BoxService::new(service_fn(handler)));
-
-    //     this
-    // }
 
     fn build(mut this: PyRefMut<'_, Self>) -> PyProxy {
         let center_addr = this.center_addr.take().unwrap().parse().unwrap();
@@ -115,13 +85,13 @@ impl PyProxy {
     ) -> PyCodecResponse {
         let now = Local::now();
         println!(
-            "Current time (microseconds) A: {}",
+            "Current time (microseconds) C: {}",
             now.format("%Y-%m-%d %H:%M:%S%.6f").to_string()
         );
         let (tx, rx) = oneshot::channel();
         this.inner
-            .instruct_tx
-            .blocking_send(Instruct::Request {
+            .command_tx
+            .blocking_send(Command::Request {
                 peer_id: peer_id.parse().unwrap(),
                 request: request.into(),
                 sender: tx,
@@ -130,12 +100,33 @@ impl PyProxy {
         rx.blocking_recv().unwrap().unwrap().into()
     }
 
+    // fn send_tensor(
+    //     this: PyRefMut<'_, Self>,
+    //     peer_id: String,
+    //     tensor: &Bound<PyDict>,
+    // ) -> PyCodecResponse {
+    //     let (tx, rx) = oneshot::channel();
+    //     this.inner
+    //         .instruct_tx
+    //         .blocking_send(Instruct::Request {
+    //             peer_id: peer_id.parse().unwrap(),
+    //             request: codec::Request {
+    //                 route: "tensor".to_string(),
+    //                 payload: Bytes::from(vec![0u8; 8192 * 2]),
+    //             },
+    //             sender: tx,
+    //         })
+    //         .unwrap();
+    //     rx.blocking_recv().unwrap().unwrap().into()
+    // }
+
     fn send_response(this: PyRefMut<'_, Self>, request_id: PyRequestId, response: PyCodecResponse) {
         let (tx, rx) = oneshot::channel();
         this.inner
-            .instruct_tx
-            .blocking_send(Instruct::Response {
-                request_id: request_id.id,
+            .command_tx
+            .blocking_send(Command::Response {
+                peer_id: request_id.peer_id,
+                request_id: request_id.request_id,
                 response: response.into(),
                 sender: tx,
             })
@@ -146,7 +137,9 @@ impl PyProxy {
     fn recv(this: Py<Self>, py: Python<'_>) -> Option<(PyRequestId, PyCodecRequest)> {
         let message_rx = this.borrow(py).inner.message_rx.clone();
         Python::allow_threads(py, move || match message_rx.recv() {
-            Ok((id, request)) => Some((id.into(), request.into())),
+            Ok((peer_id, request_id, request)) => {
+                Some((PyRequestId::new(peer_id, request_id), request.into()))
+            }
             Err(_) => None,
         })
     }
@@ -155,12 +148,16 @@ impl PyProxy {
 #[pyclass]
 #[derive(Clone)]
 struct PyRequestId {
-    id: InboundRequestId,
+    peer_id: PeerId,
+    request_id: InboundRequestId,
 }
 
-impl From<InboundRequestId> for PyRequestId {
-    fn from(value: InboundRequestId) -> Self {
-        Self { id: value }
+impl PyRequestId {
+    fn new(peer_id: PeerId, request_id: InboundRequestId) -> Self {
+        Self {
+            peer_id,
+            request_id,
+        }
     }
 }
 

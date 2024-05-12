@@ -68,17 +68,3 @@ where
         }
     }
 }
-
-struct A {
-    a: usize,
-}
-
-impl A {
-    fn new(a: usize) -> Self {
-        Self { a }
-    }
-
-    fn a(&self) -> &usize {
-        &self.a
-    }
-}

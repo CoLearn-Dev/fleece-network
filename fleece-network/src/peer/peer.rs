@@ -19,7 +19,7 @@ pub struct Peer {
 
     eventloop: EventLoop,
 
-    codec_router:
+    router:
         Router<codec::Request, codec::Response, Error, Handler<codec::Request, codec::Response>>,
 
     event_rx: mpsc::Receiver<Event>,
@@ -31,7 +31,7 @@ impl Peer {
         center_addr: Multiaddr,
         center_peer_id: PeerId,
         self_addr: Multiaddr,
-        codec_handler: Handler<codec::Request, codec::Response>,
+        handler: Handler<codec::Request, codec::Response>,
     ) -> Self {
         let keypair = identity::Keypair::generate_ed25519();
         let peer_id = keypair.public().to_peer_id();
@@ -73,7 +73,7 @@ impl Peer {
         Self {
             peer_id,
             eventloop,
-            codec_router: Router::new(codec_handler),
+            router: Router::new(handler),
             event_rx,
             command_tx,
         }
@@ -85,11 +85,11 @@ impl Peer {
             match self.event_rx.recv().await {
                 Some(event) => match event {
                     Event::Request {
+                        peer_id,
                         request_id,
                         request,
-                        channel,
                     } => {
-                        let future = self.codec_router.call(request);
+                        let future = self.router.call(request);
                         let command_tx = self.command_tx.clone();
                         tokio::spawn(async move {
                             let response = future.await;
@@ -97,8 +97,8 @@ impl Peer {
                             if response.is_err() {
                                 command_tx
                                     .send(Command::Response {
+                                        peer_id,
                                         request_id,
-                                        channel,
                                         response: codec::Response::new(
                                             String::from("error"),
                                             Bytes::default(),
@@ -110,8 +110,8 @@ impl Peer {
                             } else {
                                 command_tx
                                     .send(Command::Response {
+                                        peer_id,
                                         request_id,
-                                        channel,
                                         response: response.unwrap(),
                                         sender,
                                     })

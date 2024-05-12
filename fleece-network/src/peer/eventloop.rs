@@ -1,21 +1,24 @@
 use std::collections::{hash_map::Entry, HashMap};
 
-use chrono::Local;
+use futures_timer::Delay;
+use instant::Duration;
 use libp2p::{
     futures::StreamExt,
     rendezvous::{self, Cookie},
-    request_response::{self, InboundRequestId, OutboundRequestId, ResponseChannel},
     swarm::{dial_opts::DialOpts, SwarmEvent},
     Multiaddr, PeerId, Swarm,
 };
 use tokio::sync::{mpsc, oneshot};
-use tracing::info;
+use tracing::{debug, info};
 
-use crate::error::Error;
+use crate::{
+    channel::{self, InboundRequestId, OneshotSender},
+    error::Error,
+};
 
 use super::{
     behaviour::{Behaviour, BehaviourEvent},
-    codec, raw,
+    codec,
 };
 
 type Medium<T> = oneshot::Sender<Result<T, Error>>;
@@ -30,13 +33,12 @@ pub(super) struct EventLoop {
     center_addr: Multiaddr,
     center_peer_id: PeerId,
 
+    delay: Delay,
     last_cookie: Option<Cookie>,
 
     pending_dials: HashMap<PeerId, Medium<()>>,
-    codec_pending_requests: HashMap<OutboundRequestId, Medium<codec::Response>>,
-    codec_pending_responses: HashMap<InboundRequestId, Medium<()>>,
-    raw_pending_requests: HashMap<u64, Medium<raw::Response>>,
-    raw_pending_responses: HashMap<u64, Medium<()>>,
+    pending_requests: HashMap<channel::OutboundRequestId, Medium<codec::Response>>,
+    pending_responses: HashMap<channel::InboundRequestId, Medium<()>>,
 }
 
 impl EventLoop {
@@ -55,12 +57,11 @@ impl EventLoop {
             event_tx,
             center_addr,
             center_peer_id,
+            delay: Delay::new(Duration::from_secs(1)),
             last_cookie: None,
             pending_dials: Default::default(),
-            codec_pending_requests: Default::default(),
-            codec_pending_responses: Default::default(),
-            raw_pending_requests: Default::default(),
-            raw_pending_responses: Default::default(),
+            pending_requests: Default::default(),
+            pending_responses: Default::default(),
         }
     }
 
@@ -74,6 +75,15 @@ impl EventLoop {
                     }
                 }
                 event = self.swarm.select_next_some() => self.handle_event(event).await,
+                _ = &mut self.delay => {
+                    self.delay.reset(Duration::from_secs(1));
+                    self.command_tx
+                        .send(Command::Discover {
+                            namespace: String::from("fleece"),
+                        })
+                        .await
+                        .unwrap();
+                }
             }
         }
     }
@@ -89,6 +99,11 @@ impl EventLoop {
                         ..
                     } => {
                         self.last_cookie.replace(cookie);
+                        for registration in registrations {
+                            for address in registration.record.addresses() {
+                                info!("Find: {:?}", address);
+                            }
+                        }
 
                         // for registration in registrations {
                         //     for address in registration.record.addresses() {
@@ -116,71 +131,48 @@ impl EventLoop {
                     rendezvous::client::Event::RegisterFailed { .. } => {}
                     rendezvous::client::Event::Expired { .. } => {}
                 },
-                BehaviourEvent::RequestResponse(event) => match event {
-                    request_response::Event::Message { message, .. } => match message {
-                        request_response::Message::Request {
-                            request_id,
-                            request,
-                            channel,
-                        } => {
-                            let now = Local::now();
-                            println!(
-                                "Current time (microseconds) E: {}",
-                                now.format("%Y-%m-%d %H:%M:%S%.6f").to_string()
-                            );
-                            self.event_tx
-                                .send(Event::Request {
-                                    request_id,
-                                    request,
-                                    channel,
-                                })
-                                .await
-                                .unwrap();
-                        }
-                        request_response::Message::Response {
-                            request_id,
-                            response,
-                        } => {
-                            if let Some(sender) = self.codec_pending_requests.remove(&request_id) {
-                                let now = Local::now();
-                                println!(
-                                    "Current time (microseconds) D: {}",
-                                    now.format("%Y-%m-%d %H:%M:%S%.6f").to_string()
-                                );
-                                sender.send(Ok(response)).unwrap();
-                            }
-                        }
-                    },
-                    request_response::Event::OutboundFailure {
-                        request_id, error, ..
-                    } => {
-                        if let Some(sender) = self.codec_pending_requests.remove(&request_id) {
-                            sender.send(Err(Error::from(error))).unwrap();
-                        }
+                BehaviourEvent::RelayClient(_) => {}
+                BehaviourEvent::Upnp(_) => {}
+                BehaviourEvent::Dcutr(_) => {}
+                BehaviourEvent::Ping(event) => {
+                    if let Ok(duration) = event.result {
+                        info!("Ping {:?}: {:?}", event.peer, duration);
+                        self.swarm.behaviour_mut().channel.update_rtt(
+                            &event.peer,
+                            event.connection,
+                            duration,
+                        );
                     }
-                    request_response::Event::InboundFailure { .. } => {}
-                    request_response::Event::ResponseSent { request_id, .. } => {
-                        if let Some(sender) = self.codec_pending_responses.remove(&request_id) {
-                            sender.send(Ok(())).unwrap();
-                        }
+                }
+                BehaviourEvent::Channel(event) => match event {
+                    channel::behaviour::Event::Request {
+                        peer_id,
+                        request_id,
+                        request,
+                    } => {
+                        self.event_tx
+                            .send(Event::Request {
+                                peer_id,
+                                request_id,
+                                request,
+                            })
+                            .await
+                            .unwrap();
+                    }
+                    channel::behaviour::Event::MissedResponse {
+                        request_id,
+                        response,
+                    } => todo!(),
+                    channel::behaviour::Event::Failure { peer_id, failure } => {
+                        info!("Channel failure {:?}: {:?}", peer_id, failure);
                     }
                 },
-                BehaviourEvent::RelayClient(event) => {}
-                BehaviourEvent::Upnp(_) => {}
-                BehaviourEvent::Dcutr(event) => {
-                    info!("dcutr: {:?}", event);
-                }
-                BehaviourEvent::Ping(event) => {}
-                BehaviourEvent::Stream(_) => {}
             },
             SwarmEvent::ConnectionEstablished {
                 peer_id, endpoint, ..
             } => {
-                info!("Connection established {:?}", peer_id);
-                println!("Connection established {:?}", peer_id);
-
                 if peer_id == self.center_peer_id {
-                    let namespace = "TODO".to_string();
+                    let namespace = String::from("fleece");
                     self.command_tx
                         .send(Command::Register {
                             namespace: namespace.clone(),
@@ -257,7 +249,7 @@ impl EventLoop {
                 }
             }
             Command::Register { namespace } => {
-                info!("Registering namespace: {}", namespace);
+                debug!("Registering namespace: {}", namespace);
                 self.swarm
                     .behaviour_mut()
                     .rendezvous
@@ -269,59 +261,43 @@ impl EventLoop {
                     .unwrap();
             }
             Command::Unregister { namespace } => {
-                info!("Unregistering namespace: {}", namespace);
+                debug!("Unregistering namespace: {}", namespace);
                 self.swarm.behaviour_mut().rendezvous.unregister(
                     rendezvous::Namespace::new(namespace).unwrap(),
                     self.center_peer_id,
                 );
             }
             Command::Discover { namespace } => {
-                info!("Discovering namespace: {}", namespace);
-                self.swarm.behaviour_mut().rendezvous.discover(
-                    Some(rendezvous::Namespace::new(namespace).unwrap()),
-                    self.last_cookie.clone(),
-                    None,
-                    self.center_peer_id,
-                );
+                if self.swarm.is_connected(&self.center_peer_id) {
+                    debug!("Discovering namespace: {}", namespace);
+                    self.swarm.behaviour_mut().rendezvous.discover(
+                        Some(rendezvous::Namespace::new(namespace).unwrap()),
+                        self.last_cookie.clone(),
+                        None,
+                        self.center_peer_id,
+                    );
+                }
             }
             Command::Request {
                 peer_id,
                 request,
                 sender,
             } => {
-                let now = Local::now();
-                println!(
-                    "Current time (microseconds) C: {}",
-                    now.format("%Y-%m-%d %H:%M:%S%.6f").to_string()
-                );
-                let req_id = self
-                    .swarm
+                self.swarm
                     .behaviour_mut()
-                    .request_response
-                    .send_request(&peer_id, request);
-                self.codec_pending_requests.insert(req_id, sender);
+                    .channel
+                    .send_request(&peer_id, request, sender);
             }
             Command::Response {
+                peer_id,
                 request_id,
-                channel,
                 response,
                 sender,
             } => {
-                let now = Local::now();
-                println!(
-                    "Current time (microseconds): {}",
-                    now.format("%Y-%m-%d %H:%M:%S%.6f").to_string()
-                );
-                let result = self
-                    .swarm
+                self.swarm
                     .behaviour_mut()
-                    .request_response
-                    .send_response(channel, response);
-                if result.is_err() {
-                    sender.send(Err(Error::ConnectionError)).unwrap();
-                } else {
-                    self.codec_pending_responses.insert(request_id, sender);
-                }
+                    .channel
+                    .send_response(&peer_id, request_id, response, sender);
             }
         }
     }
@@ -346,20 +322,20 @@ pub enum Command {
     Request {
         peer_id: PeerId,
         request: codec::Request,
-        sender: Medium<codec::Response>,
+        sender: OneshotSender<codec::Response>,
     },
     Response {
-        request_id: InboundRequestId,
-        channel: ResponseChannel<codec::Response>,
+        peer_id: PeerId,
+        request_id: channel::InboundRequestId,
         response: codec::Response,
-        sender: Medium<()>,
+        sender: OneshotSender<()>,
     },
 }
 
 pub(super) enum Event {
     Request {
+        peer_id: PeerId,
         request_id: InboundRequestId,
         request: codec::Request,
-        channel: ResponseChannel<codec::Response>,
     },
 }

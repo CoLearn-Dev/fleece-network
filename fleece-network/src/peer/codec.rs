@@ -1,12 +1,22 @@
-use std::io;
+use std::{
+    io,
+    pin::Pin,
+    task::{Context, Poll},
+};
 
-use async_trait::async_trait;
-use bytes::Bytes;
-use futures::{AsyncRead, AsyncReadExt, AsyncWriteExt};
-use libp2p::request_response;
+use bytes::{Bytes, BytesMut};
+use futures::{AsyncRead, AsyncWrite};
 use serde::{Deserialize, Serialize};
+use tracing::info;
 
-use crate::router::Routable;
+use crate::{
+    channel::{
+        self, codec,
+        message::{InboundMessage, OutboundMessage},
+    },
+    router::Routable,
+    utils::chunk::{ChunkReader, ChunkWriter},
+};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Request {
@@ -26,7 +36,7 @@ impl Routable for Request {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Response {
     pub status: String,
     pub payload: Bytes,
@@ -39,95 +49,121 @@ impl Response {
 }
 
 #[derive(Debug, Clone)]
-pub struct Codec {
-    /// Necessary in order to avoid DoS attacks.
-    max_response_size: usize,
-}
+pub struct Codec {}
 
 impl Default for Codec {
     fn default() -> Self {
-        Self {
-            max_response_size: 2 * 8192 * 262 * 1024,
+        Self {}
+    }
+}
+
+impl channel::Codec for Codec {
+    type Protocol = Protocol;
+    type Request = Request;
+    type Response = Response;
+    type Encoder = Encoder;
+    type Decoder = Decoder;
+
+    fn new_decoder(&self) -> Decoder {
+        Decoder {
+            read_phase: ReadPhase::Header(ChunkReader::new(8)),
+        }
+    }
+
+    fn new_encoder(&self) -> Encoder {
+        Encoder {}
+    }
+}
+
+#[derive(Debug)]
+pub struct Decoder {
+    read_phase: ReadPhase,
+}
+
+impl codec::Decoder for Decoder {
+    type Message = InboundMessage<Request, Response>;
+
+    fn poll_read(
+        &mut self,
+        mut reader: Pin<&mut (impl AsyncRead + Unpin + Send)>,
+        cx: &mut Context<'_>,
+    ) -> Poll<io::Result<InboundMessage<Request, Response>>> {
+        loop {
+            let reader = reader.as_mut();
+            match &mut self.read_phase {
+                ReadPhase::Header(chunk_reader) => match chunk_reader.poll_read(reader, cx) {
+                    Poll::Ready(result) => match result {
+                        Ok(_) => {
+                            let len = u64::from_be_bytes(
+                                chunk_reader.buffer[..8].try_into().expect("invalid header"),
+                            );
+                            info!("Try to read {:?} bytes", len);
+                            self.read_phase = ReadPhase::Payload(ChunkReader::new(len as usize));
+                        }
+                        Err(e) => return Poll::Ready(Err(e)),
+                    },
+                    Poll::Pending => return Poll::Pending,
+                },
+                ReadPhase::Payload(chunk_reader) => match chunk_reader.poll_read(reader, cx) {
+                    Poll::Ready(result) => match result {
+                        Ok(_) => {
+                            let message: OutboundMessage<Request, Response> =
+                                bincode::deserialize(&chunk_reader.buffer[..]).unwrap();
+                            self.read_phase = ReadPhase::Header(ChunkReader::new(8));
+                            return Poll::Ready(Ok(message.into()));
+                        }
+                        Err(e) => return Poll::Ready(Err(e)),
+                    },
+                    Poll::Pending => return Poll::Pending,
+                },
+            }
         }
     }
 }
 
-#[async_trait]
-impl request_response::Codec for Codec {
-    type Protocol = Protocol;
-    type Request = Request;
-    type Response = Response;
+#[derive(Debug)]
+pub struct Encoder {}
 
-    async fn read_request<T>(
+impl codec::Encoder for Encoder {
+    type Message = OutboundMessage<Request, Response>;
+
+    fn poll_write(
         &mut self,
-        _: &Self::Protocol,
-        socket: &mut T,
-    ) -> io::Result<Self::Request>
-    where
-        T: AsyncRead + Unpin + Send,
-    {
-        let mut request = Vec::new();
-        socket
-            .take(self.max_response_size as u64)
-            .read_to_end(&mut request)
-            .await?;
-        bincode::deserialize(&request).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-    }
-
-    async fn read_response<T>(
-        &mut self,
-        _: &Self::Protocol,
-        socket: &mut T,
-    ) -> io::Result<Self::Response>
-    where
-        T: AsyncRead + Unpin + Send,
-    {
-        let mut response = Vec::new();
-        socket
-            .take(self.max_response_size as u64)
-            .read_to_end(&mut response)
-            .await?;
-
-        bincode::deserialize(&response).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-    }
-
-    async fn write_request<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        socket: &mut T,
-        req: Self::Request,
-    ) -> io::Result<()>
-    where
-        T: futures::AsyncWrite + Unpin + Send,
-    {
-        let encoded_data =
-            bincode::serialize(&req).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        socket.write_all(&encoded_data).await?;
-        Ok(())
-    }
-
-    async fn write_response<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        socket: &mut T,
-        res: Self::Response,
-    ) -> io::Result<()>
-    where
-        T: futures::AsyncWrite + Unpin + Send,
-    {
-        let encoded_data =
-            bincode::serialize(&res).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        socket.write_all(&encoded_data).await?;
-        Ok(())
+        mut writer: Pin<&mut (impl AsyncWrite + Unpin + Send)>,
+        payload: &OutboundMessage<Request, Response>,
+        cx: &mut Context<'_>,
+    ) -> Poll<io::Result<()>> {
+        let writer = writer.as_mut();
+        let payload = bincode::serialize(payload).unwrap();
+        let size = (payload.len() as u64).to_be_bytes();
+        let mut buffer = BytesMut::with_capacity(8 + payload.len());
+        buffer.extend_from_slice(&size);
+        buffer.extend_from_slice(&payload);
+        let mut chunk_writer = ChunkWriter::new(buffer.freeze());
+        loop {
+            match chunk_writer.poll_write(writer, cx) {
+                Poll::Ready(result) => match result {
+                    Ok(_) => return Poll::Ready(Ok(())),
+                    Err(e) => return Poll::Ready(Err(e)),
+                },
+                Poll::Pending => return Poll::Pending,
+            }
+        }
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug)]
+enum ReadPhase {
+    Header(ChunkReader),
+    Payload(ChunkReader),
+}
+
+#[derive(Clone, Debug)]
 pub struct Protocol;
 
 impl AsRef<str> for Protocol {
     fn as_ref(&self) -> &str {
-        "/fleece/1.0.0"
+        "/fleece/channel/1.0.0"
     }
 }
 

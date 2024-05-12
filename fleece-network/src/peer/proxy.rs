@@ -1,16 +1,14 @@
-use std::{collections::HashMap, pin::Pin, sync::Arc, time::Duration};
+use std::{io, pin::Pin, time::Duration};
 
-use chrono::Local;
 use crossbeam_channel::{self, unbounded};
 use futures::Future;
 use libp2p::{identity, multiaddr::Protocol, swarm, Multiaddr, PeerId, Swarm};
-use libp2p_request_response::InboundRequestId;
 use tokio::{
     select,
-    sync::{mpsc, oneshot, Mutex},
+    sync::{mpsc, oneshot},
 };
 
-use crate::{error::Error, peer::eventloop::Command, transport::TransportBuilder};
+use crate::{channel::InboundRequestId, peer::eventloop::Command, transport::TransportBuilder};
 
 use super::{
     behaviour::Behaviour,
@@ -18,12 +16,12 @@ use super::{
     eventloop::{Event, EventLoop},
 };
 
-type Medium<T> = oneshot::Sender<Result<T, Error>>;
+type Medium<T> = oneshot::Sender<Result<T, io::Error>>;
 
 pub struct Proxy {
     pub peer_id: PeerId,
-    pub instruct_tx: mpsc::Sender<Instruct>,
-    pub message_rx: crossbeam_channel::Receiver<(InboundRequestId, codec::Request)>,
+    pub command_tx: mpsc::Sender<Command>,
+    pub message_rx: crossbeam_channel::Receiver<(PeerId, InboundRequestId, codec::Request)>,
 }
 
 impl Proxy {
@@ -59,7 +57,6 @@ impl Proxy {
         // setup for stream
 
         let (command_tx, command_rx) = mpsc::channel(32);
-        let (instruct_tx, mut instruct_rx) = mpsc::channel(32);
         let (event_tx, mut event_rx) = mpsc::channel(32);
         let (message_tx, message_rx) = unbounded();
         let eventloop = EventLoop::new(
@@ -70,13 +67,13 @@ impl Proxy {
             center_addr.clone(),
             center_peer_id.clone(),
         );
-        let pending_requests = Arc::new(Mutex::new(HashMap::new()));
 
+        let command_tx_clone = command_tx.clone();
         tokio::spawn(eventloop.run());
         let future = Box::pin(async move {
             // initial dial
             tokio::time::sleep(Duration::from_secs(1)).await;
-            command_tx
+            command_tx_clone
                 .send(Command::Dial {
                     peer_id: center_peer_id,
                     peer_addr: Some(center_addr),
@@ -88,53 +85,11 @@ impl Proxy {
                 select! {
                     event = event_rx.recv() => match event {
                         Some(event) => match event {
-                            Event::Request {
-                                request_id,
-                                request,
-                                channel,
-                            } => {
-                                pending_requests.lock().await.insert(request_id, channel);
-                                message_tx.send((request_id, request)).unwrap();
-                            }
+                            Event::Request { peer_id, request_id, request } => {
+                                message_tx.send((peer_id, request_id, request)).unwrap();
+                            },
                         },
                         None => break,
-                    },
-
-                    instruct = instruct_rx.recv() => {
-                        match instruct {
-                            Some(instruct) => match instruct {
-                                Instruct::Request {
-                                    peer_id,
-                                    request,
-                                    sender,
-                                } => {
-                                    let now = Local::now();
-                                    println!(
-                                        "Current time (microseconds) B: {}",
-                                        now.format("%Y-%m-%d %H:%M:%S%.6f").to_string()
-                                    );
-                                    command_tx.send(Command::Request {
-                                        peer_id,
-                                        request,
-                                        sender,
-                                    }).await.unwrap();
-                                },
-                                Instruct::Response {
-                                    request_id,
-                                    response,
-                                    sender,
-                                } => {
-                                    let channel = pending_requests.lock().await.remove(&request_id).unwrap();
-                                    command_tx.send(Command::Response {
-                                        request_id,
-                                        channel,
-                                        response,
-                                        sender,
-                                    }).await.unwrap();
-                                },
-                            },
-                            None => break,
-                        }
                     },
                 }
             }
@@ -143,7 +98,7 @@ impl Proxy {
         (
             Self {
                 peer_id,
-                instruct_tx,
+                command_tx,
                 message_rx,
             },
             future,
@@ -158,6 +113,7 @@ pub enum Instruct {
         sender: Medium<codec::Response>,
     },
     Response {
+        peer_id: PeerId,
         request_id: InboundRequestId,
         response: codec::Response,
         sender: Medium<()>,

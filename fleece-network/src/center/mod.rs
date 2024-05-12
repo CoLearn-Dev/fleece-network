@@ -8,7 +8,6 @@ use libp2p::{
     swarm::{self, NetworkBehaviour, SwarmEvent},
     Multiaddr, PeerId, Swarm,
 };
-use log::info;
 
 use crate::transport::TransportBuilder;
 
@@ -44,7 +43,6 @@ impl Center {
     pub async fn run(mut self) {
         loop {
             let event = self.swarm.next().await;
-            info!("Event: {:?}", event);
             match event {
                 Some(event) => match event {
                     SwarmEvent::Behaviour(_) => {}

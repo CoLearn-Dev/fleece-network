@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 use futures::future::Either;
 use libp2p::{
     core::{muxing::StreamMuxerBox, transport::Boxed, upgrade::Version},

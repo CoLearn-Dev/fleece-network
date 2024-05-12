@@ -14,12 +14,15 @@ either = "1.11.0"
 env_logger = "0.11.3"
 futures = "0.3.30"
 futures-bounded = "0.2.3"
+futures-timer = "3.0.3"
+instant = "0.1.12"
 libp2p = { version = "0.53.2", features = ["full"] }
 libp2p-mplex = "0.41.0"
 libp2p-request-response = "0.26.2"
 libp2p-stream = "0.1.0-alpha"
 libp2p-swarm = { version = "0.44.2", features = ["tokio"] }
 log = "0.4.21"
+rand = "0.8.5"
 serde = { version = "1.0.199", features = ["derive"] }
 smallvec = "1.13.2"
 sync_wrapper = "1.0.1"

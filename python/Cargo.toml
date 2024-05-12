@@ -17,6 +17,7 @@ futures = "0.3.30"
 libp2p = "0.53.2"
 pyo3 = { version = "0.21.2", features = ["extension-module"] }
 pyo3-log = "0.10.0"
+safetensors = "0.4.3"
 tokio = { version = "1.37.0", features = ["full"] }
 tower = { version = "0.4.13", features = ["util"] }
 
@@ -24,5 +25,4 @@ tower = { version = "0.4.13", features = ["util"] }
 opt-level = 3
 strip = true
 debug = false
-codegen-units = 1
 lto = true
