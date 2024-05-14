@@ -1,7 +1,6 @@
 use std::{str::FromStr, thread};
 
 use bytes::Bytes;
-use chrono::Local;
 use crossbeam_channel::bounded;
 use fleece_network::{
     channel::InboundRequestId,
@@ -17,7 +16,6 @@ struct PyProxyBuilder {
     center_addr: Option<String>,
     center_peer_id: Option<String>,
     self_addr: Option<String>,
-    // handlers: Option<Handler<codec::Request, codec::Response>>,
 }
 
 #[pymethods]
@@ -83,11 +81,6 @@ impl PyProxy {
         peer_id: String,
         request: PyCodecRequest,
     ) -> PyCodecResponse {
-        let now = Local::now();
-        println!(
-            "Current time (microseconds) C: {}",
-            now.format("%Y-%m-%d %H:%M:%S%.6f").to_string()
-        );
         let (tx, rx) = oneshot::channel();
         this.inner
             .command_tx
@@ -99,26 +92,6 @@ impl PyProxy {
             .unwrap();
         rx.blocking_recv().unwrap().unwrap().into()
     }
-
-    // fn send_tensor(
-    //     this: PyRefMut<'_, Self>,
-    //     peer_id: String,
-    //     tensor: &Bound<PyDict>,
-    // ) -> PyCodecResponse {
-    //     let (tx, rx) = oneshot::channel();
-    //     this.inner
-    //         .instruct_tx
-    //         .blocking_send(Instruct::Request {
-    //             peer_id: peer_id.parse().unwrap(),
-    //             request: codec::Request {
-    //                 route: "tensor".to_string(),
-    //                 payload: Bytes::from(vec![0u8; 8192 * 2]),
-    //             },
-    //             sender: tx,
-    //         })
-    //         .unwrap();
-    //     rx.blocking_recv().unwrap().unwrap().into()
-    // }
 
     fn send_response(this: PyRefMut<'_, Self>, request_id: PyRequestId, response: PyCodecResponse) {
         let (tx, rx) = oneshot::channel();

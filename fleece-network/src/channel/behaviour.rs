@@ -155,7 +155,8 @@ where
             }));
     }
 
-    fn on_dial_failure(&mut self, DialFailure { peer_id, .. }: DialFailure) {
+    fn on_dial_failure(&mut self, DialFailure { peer_id, error, .. }: DialFailure) {
+        println!("Dial failure: {:?}", error);
         if let Some(peer_id) = peer_id {
             self.pending_events
                 .push_back(ToSwarm::GenerateEvent(Event::Failure {

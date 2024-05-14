@@ -1,14 +1,17 @@
 use std::collections::{hash_map::Entry, HashMap};
 
-use futures_timer::Delay;
 use instant::Duration;
 use libp2p::{
     futures::StreamExt,
+    multiaddr::Protocol,
     rendezvous::{self, Cookie},
     swarm::{dial_opts::DialOpts, SwarmEvent},
     Multiaddr, PeerId, Swarm,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::{
+    sync::{mpsc, oneshot},
+    time::{self, Interval},
+};
 use tracing::{debug, info};
 
 use crate::{
@@ -33,12 +36,10 @@ pub(super) struct EventLoop {
     center_addr: Multiaddr,
     center_peer_id: PeerId,
 
-    delay: Delay,
+    interval: Interval,
     last_cookie: Option<Cookie>,
 
     pending_dials: HashMap<PeerId, Medium<()>>,
-    pending_requests: HashMap<channel::OutboundRequestId, Medium<codec::Response>>,
-    pending_responses: HashMap<channel::InboundRequestId, Medium<()>>,
 }
 
 impl EventLoop {
@@ -57,11 +58,9 @@ impl EventLoop {
             event_tx,
             center_addr,
             center_peer_id,
-            delay: Delay::new(Duration::from_secs(1)),
+            interval: time::interval(Duration::from_secs(1)),
             last_cookie: None,
             pending_dials: Default::default(),
-            pending_requests: Default::default(),
-            pending_responses: Default::default(),
         }
     }
 
@@ -75,14 +74,23 @@ impl EventLoop {
                     }
                 }
                 event = self.swarm.select_next_some() => self.handle_event(event).await,
-                _ = &mut self.delay => {
-                    self.delay.reset(Duration::from_secs(1));
+                _ = self.interval.tick() => {
                     self.command_tx
                         .send(Command::Discover {
                             namespace: String::from("fleece"),
                         })
                         .await
                         .unwrap();
+                    if !self.swarm.is_connected(&self.center_peer_id) {
+                        self.command_tx
+                            .send(Command::Dial {
+                                peer_id: self.center_peer_id,
+                                peer_addr: Some(self.center_addr.clone()),
+                                sender: None,
+                            })
+                            .await
+                            .unwrap();
+                    }
                 }
             }
         }
@@ -104,27 +112,6 @@ impl EventLoop {
                                 info!("Find: {:?}", address);
                             }
                         }
-
-                        // for registration in registrations {
-                        //     for address in registration.record.addresses() {
-                        //         let peer = registration.record.peer_id();
-                        //         if peer == *self.swarm.local_peer_id() {
-                        //             continue;
-                        //         }
-
-                        //         let p2p_suffix = multiaddr::Protocol::P2p(peer);
-                        //         let address_with_p2p = if !address
-                        //             .ends_with(&Multiaddr::empty().with(p2p_suffix.clone()))
-                        //         {
-                        //             address.clone().with(p2p_suffix)
-                        //         } else {
-                        //             address.clone()
-                        //         };
-                        //         info!("Dialing: {:?}", address_with_p2p);
-                        //         println!("Dialing: {:?}", address_with_p2p);
-                        //         self.swarm.dial(address_with_p2p).unwrap();
-                        //     }
-                        // }
                     }
                     rendezvous::client::Event::DiscoverFailed { .. } => {}
                     rendezvous::client::Event::Registered { .. } => {}
@@ -159,10 +146,7 @@ impl EventLoop {
                             .await
                             .unwrap();
                     }
-                    channel::behaviour::Event::MissedResponse {
-                        request_id,
-                        response,
-                    } => todo!(),
+                    channel::behaviour::Event::MissedResponse { .. } => todo!(),
                     channel::behaviour::Event::Failure { peer_id, failure } => {
                         info!("Channel failure {:?}: {:?}", peer_id, failure);
                     }
@@ -172,6 +156,7 @@ impl EventLoop {
                 peer_id, endpoint, ..
             } => {
                 if peer_id == self.center_peer_id {
+                    // setup for rendzvous
                     let namespace = String::from("fleece");
                     self.command_tx
                         .send(Command::Register {
@@ -179,12 +164,15 @@ impl EventLoop {
                         })
                         .await
                         .unwrap();
-                    self.command_tx
-                        .send(Command::Discover {
-                            namespace: namespace.clone(),
-                        })
-                        .await
-                        .unwrap();
+
+                    // setup for relay
+                    let relay_addr = self
+                        .center_addr
+                        .clone()
+                        .with(Protocol::P2pCircuit)
+                        .with(Protocol::P2p(peer_id));
+                    self.swarm.listen_on(relay_addr.clone()).unwrap();
+                    self.swarm.add_external_address(relay_addr.clone());
                 }
 
                 if endpoint.is_dialer() {

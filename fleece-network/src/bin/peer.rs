@@ -1,4 +1,4 @@
-use std::{str::FromStr, time::Duration};
+use std::str::FromStr;
 
 use bytes::Bytes;
 use fleece_network::{
@@ -47,16 +47,6 @@ async fn main() -> Result<(), Error> {
 
     let command_tx = peer.command_tx.clone();
     tokio::spawn(peer.run());
-
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    command_tx
-        .send(Command::Dial {
-            peer_id: center_peer_id,
-            peer_addr: Some(center_addr),
-            sender: None,
-        })
-        .await
-        .unwrap();
 
     let stdin = BufReader::new(io::stdin());
     let mut lines = stdin.lines();

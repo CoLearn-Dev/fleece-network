@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use libp2p::{identity, multiaddr::Protocol, swarm, Multiaddr, PeerId, Swarm};
+use libp2p::{identity, swarm, Multiaddr, PeerId, Swarm};
 use tokio::sync::{mpsc, oneshot};
 use tower::Service;
 
@@ -48,14 +48,6 @@ impl Peer {
 
         // setup for direct connection
         swarm.listen_on(self_addr.clone()).unwrap();
-
-        // setup for relay
-        let relay_addr = center_addr
-            .clone()
-            .with(Protocol::P2pCircuit)
-            .with(Protocol::P2p(peer_id));
-        swarm.listen_on(relay_addr.clone()).unwrap();
-        swarm.add_external_address(relay_addr.clone());
 
         // setup for stream
 

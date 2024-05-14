@@ -68,7 +68,6 @@ impl ChunkWriter {
             let writer = writer.as_mut();
             if self.cursor == self.buffer.len() {
                 info!("Write {:?} bytes", self.buffer.len());
-                // return Poll::Ready(Ok(()));
                 return writer.poll_flush(cx);
             }
 

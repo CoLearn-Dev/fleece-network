@@ -1,15 +1,21 @@
-[build-system]
-requires = ["maturin>=1.5,<2.0"]
-build-backend = "maturin"
-
 [project]
-name = "fleece_network_rust"
+name = "fleece_network"
 requires-python = ">=3.8"
 classifiers = [
   "Programming Language :: Rust",
   "Programming Language :: Python :: Implementation :: CPython",
   "Programming Language :: Python :: Implementation :: PyPy",
+  "Typing :: Typed",
 ]
 dynamic = ["version"]
+dependencies = ["safetensors"]
+
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
 [tool.maturin]
+python-source = "pysrc"
+module-name = "fleece_network.fleece_network_rust"
+bindings = "pyo3"
 features = ["pyo3/extension-module"]

@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     io,
     pin::Pin,
     task::{Context, Poll},
@@ -71,13 +72,21 @@ impl channel::Codec for Codec {
     }
 
     fn new_encoder(&self) -> Encoder {
-        Encoder {}
+        Encoder::default()
     }
 }
 
 #[derive(Debug)]
 pub struct Decoder {
     read_phase: ReadPhase,
+}
+
+impl Default for Decoder {
+    fn default() -> Self {
+        Self {
+            read_phase: ReadPhase::Header(ChunkReader::new(8)),
+        }
+    }
 }
 
 impl codec::Decoder for Decoder {
@@ -121,32 +130,43 @@ impl codec::Decoder for Decoder {
     }
 }
 
-#[derive(Debug)]
-pub struct Encoder {}
+#[derive(Debug, Default)]
+pub struct Encoder {
+    buffer: VecDeque<ChunkWriter>,
+}
 
 impl codec::Encoder for Encoder {
     type Message = OutboundMessage<Request, Response>;
 
-    fn poll_write(
-        &mut self,
-        mut writer: Pin<&mut (impl AsyncWrite + Unpin + Send)>,
-        payload: &OutboundMessage<Request, Response>,
-        cx: &mut Context<'_>,
-    ) -> Poll<io::Result<()>> {
-        let writer = writer.as_mut();
+    fn start_send(&mut self, payload: &Self::Message) -> Result<(), io::Error> {
         let payload = bincode::serialize(payload).unwrap();
         let size = (payload.len() as u64).to_be_bytes();
         let mut buffer = BytesMut::with_capacity(8 + payload.len());
         buffer.extend_from_slice(&size);
         buffer.extend_from_slice(&payload);
-        let mut chunk_writer = ChunkWriter::new(buffer.freeze());
+        self.buffer.push_back(ChunkWriter::new(buffer.freeze()));
+        Ok(())
+    }
+
+    fn poll_flush(
+        &mut self,
+        mut writer: Pin<&mut (impl AsyncWrite + Unpin + Send)>,
+        cx: &mut Context<'_>,
+    ) -> Poll<io::Result<()>> {
         loop {
-            match chunk_writer.poll_write(writer, cx) {
-                Poll::Ready(result) => match result {
-                    Ok(_) => return Poll::Ready(Ok(())),
-                    Err(e) => return Poll::Ready(Err(e)),
-                },
-                Poll::Pending => return Poll::Pending,
+            let writer = writer.as_mut();
+            if let Some(chunk_writer) = self.buffer.front_mut() {
+                match chunk_writer.poll_write(writer, cx) {
+                    Poll::Ready(result) => match result {
+                        Ok(_) => {
+                            self.buffer.pop_front();
+                        }
+                        Err(e) => return Poll::Ready(Err(e)),
+                    },
+                    Poll::Pending => return Poll::Pending,
+                }
+            } else {
+                return writer.poll_flush(cx);
             }
         }
     }

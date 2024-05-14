@@ -1,0 +1,4 @@
+*.so
+
+.venv/
+__pycache__/

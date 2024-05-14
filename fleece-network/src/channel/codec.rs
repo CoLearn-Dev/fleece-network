@@ -1,5 +1,4 @@
 use std::{
-    collections::VecDeque,
     fmt::Debug,
     io,
     pin::Pin,
@@ -32,12 +31,11 @@ pub trait Codec: Clone {
 pub trait Encoder {
     type Message: DeserializeOwned + Serialize + Send + Unpin + Debug;
 
-    /// Writes a request to the given I/O stream according to the
-    /// negotiated protocol.
-    fn poll_write(
+    fn start_send(&mut self, payload: &Self::Message) -> Result<(), io::Error>;
+
+    fn poll_flush(
         &mut self,
         writer: Pin<&mut (impl AsyncWrite + Unpin + Send)>,
-        payload: &Self::Message,
         cx: &mut Context<'_>,
     ) -> Poll<io::Result<()>>;
 }
@@ -94,7 +92,6 @@ impl<D: Decoder + Unpin> Stream for CodecStream<D> {
 
 pub struct CodecSink<E: Encoder> {
     sink: SyncWrapper<Pin<Box<dyn AsyncWrite + Send + Unpin>>>,
-    buffer: VecDeque<E::Message>,
     encoder: E,
 }
 
@@ -102,7 +99,6 @@ impl<E: Encoder> CodecSink<E> {
     pub fn new(stream: impl AsyncWrite + Send + Unpin + 'static, encoder: E) -> Self {
         Self {
             sink: SyncWrapper::new(Box::pin(stream) as Pin<Box<dyn AsyncWrite + Send + Unpin>>),
-            buffer: VecDeque::new(),
             encoder,
         }
     }
@@ -111,10 +107,9 @@ impl<E: Encoder> CodecSink<E> {
         &mut self,
     ) -> (
         &mut SyncWrapper<Pin<Box<dyn AsyncWrite + Send + Unpin>>>,
-        &mut VecDeque<E::Message>,
         &mut E,
     ) {
-        (&mut self.sink, &mut self.buffer, &mut self.encoder)
+        (&mut self.sink, &mut self.encoder)
     }
 }
 
@@ -126,30 +121,14 @@ impl<E: Encoder + Unpin> Sink<E::Message> for CodecSink<E> {
     }
 
     fn start_send(mut self: Pin<&mut Self>, item: E::Message) -> Result<(), Self::Error> {
-        self.buffer.push_back(item);
-        Ok(())
+        self.encoder.start_send(&item)
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        loop {
-            let (sink, buffer, codec) = self.split_borrow();
-            let sink = Pin::new(sink).get_pin_mut();
-            let message = buffer.front();
-            if let Some(message) = message {
-                match codec.poll_write(sink, message, cx) {
-                    Poll::Ready(result) => match result {
-                        Ok(()) => {
-                            buffer.pop_front();
-                            continue;
-                        }
-                        Err(e) => return Poll::Ready(Err(e)),
-                    },
-                    Poll::Pending => todo!(),
-                }
-            } else {
-                return Poll::Ready(Ok(()));
-            }
-        }
+        let (sink, codec) = self.split_borrow();
+        let sink = Pin::new(sink).get_pin_mut();
+
+        codec.poll_flush(sink, cx)
     }
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
