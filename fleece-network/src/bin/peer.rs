@@ -43,7 +43,7 @@ async fn main() -> Result<(), Error> {
     let addr = "/ip4/0.0.0.0/tcp/0".parse().unwrap();
     let peer = Peer::new(center_addr.clone(), center_peer_id, addr, handler);
     let peer_id = peer.peer_id;
-    info!("Peer ID: {}", peer_id);
+    println!("Peer ID: {}", peer_id);
 
     let command_tx = peer.command_tx.clone();
     tokio::spawn(peer.run());
@@ -51,9 +51,10 @@ async fn main() -> Result<(), Error> {
     let stdin = BufReader::new(io::stdin());
     let mut lines = stdin.lines();
     while let Some(line) = lines.next_line().await.unwrap() {
-        let request = codec::Request::new("hello".to_string(), Bytes::from(vec![0u8; 8192 * 2]));
+        let request = codec::Request::new("hello".to_string(), Bytes::from(vec![0u8; 2]));
         let (sender, receiver) = oneshot::channel();
         let start = Instant::now();
+        // info!("Sending");
         command_tx
             .send(Command::Request {
                 request,

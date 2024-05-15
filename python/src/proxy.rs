@@ -3,12 +3,12 @@ use std::{str::FromStr, thread};
 use bytes::Bytes;
 use crossbeam_channel::bounded;
 use fleece_network::{
-    channel::InboundRequestId,
+    channel::InboundHandle,
     peer::{codec, eventloop::Command, proxy::Proxy},
 };
-use libp2p::{swarm::ConnectionId, PeerId};
+use libp2p::PeerId;
 use pyo3::prelude::*;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 use tracing_subscriber::EnvFilter;
 
 #[pyclass]
@@ -54,26 +54,38 @@ impl PyProxyBuilder {
                 .build()
                 .unwrap();
             executor.block_on(async {
-                let (proxy, future) = Proxy::new(center_addr, center_peer_id, self_addr);
+                let (proxy, eventloop) = Proxy::new(center_addr, center_peer_id, self_addr);
                 tx.send(proxy).unwrap();
-                future.await; // the only way to stall the thread
+                eventloop.run().await;
             });
         });
 
         let proxy = rx.recv().unwrap();
 
-        PyProxy { inner: proxy }
+        proxy.into()
     }
 }
 
 #[pyclass]
 struct PyProxy {
-    inner: Proxy,
+    peer_id: PeerId,
+    command_tx: mpsc::Sender<Command>,
+    request_rx: Option<mpsc::Receiver<InboundHandle<codec::Request, codec::Response>>>,
+}
+
+impl From<Proxy> for PyProxy {
+    fn from(value: Proxy) -> Self {
+        Self {
+            peer_id: value.peer_id,
+            command_tx: value.command_tx,
+            request_rx: Some(value.request_rx),
+        }
+    }
 }
 
 #[pymethods]
 impl PyProxy {
-    fn enable_log(this: PyRefMut<'_, Self>) {
+    fn enable_log(_this: PyRefMut<'_, Self>) {
         let _ = tracing_subscriber::fmt()
             .event_format(
                 tracing_subscriber::fmt::format()
@@ -85,7 +97,7 @@ impl PyProxy {
     }
 
     fn peer_id(this: PyRef<'_, Self>) -> String {
-        this.inner.peer_id.to_string()
+        this.peer_id.to_string()
     }
 
     fn send_request(
@@ -94,8 +106,7 @@ impl PyProxy {
         request: PyCodecRequest,
     ) -> PyCodecResponse {
         let (tx, rx) = oneshot::channel();
-        this.inner
-            .command_tx
+        this.command_tx
             .blocking_send(Command::Request {
                 peer_id: peer_id.parse().unwrap(),
                 request: request.into(),
@@ -105,48 +116,39 @@ impl PyProxy {
         rx.blocking_recv().unwrap().unwrap().into()
     }
 
-    fn send_response(this: PyRefMut<'_, Self>, request_id: PyRequestId, response: PyCodecResponse) {
-        let (tx, rx) = oneshot::channel();
-        this.inner
-            .command_tx
-            .blocking_send(Command::Response {
-                peer_id: request_id.peer_id,
-                connection_id: request_id.connection_id,
-                request_id: request_id.request_id,
-                response: response.into(),
-                sender: tx,
-            })
-            .unwrap();
-        rx.blocking_recv().unwrap().unwrap();
-    }
+    fn recv(this: Py<Self>, py: Python<'_>) -> Option<(PyCodecRequest, PyCallback)> {
+        let mut request_rx = this.borrow_mut(py).request_rx.take().unwrap();
+        let (request_rx, result) =
+            Python::allow_threads(py, move || match request_rx.blocking_recv() {
+                Some(handle) => {
+                    let (_, request, sender) = handle.into_parts();
+                    (request_rx, Some((request.into(), PyCallback::new(sender))))
+                }
+                None => (request_rx, None),
+            });
+        this.borrow_mut(py).request_rx = Some(request_rx);
 
-    fn recv(this: Py<Self>, py: Python<'_>) -> Option<(PyRequestId, PyCodecRequest)> {
-        let message_rx = this.borrow(py).inner.message_rx.clone();
-        Python::allow_threads(py, move || match message_rx.recv() {
-            Ok((peer_id, connection_id, request_id, request)) => Some((
-                PyRequestId::new(peer_id, connection_id, request_id),
-                request.into(),
-            )),
-            Err(_) => None,
-        })
+        result
     }
 }
 
 #[pyclass]
-#[derive(Clone)]
-struct PyRequestId {
-    peer_id: PeerId,
-    connection_id: ConnectionId,
-    request_id: InboundRequestId,
+struct PyCallback {
+    sender: Option<oneshot::Sender<codec::Response>>,
 }
 
-impl PyRequestId {
-    fn new(peer_id: PeerId, connection_id: ConnectionId, request_id: InboundRequestId) -> Self {
+impl PyCallback {
+    pub fn new(sender: oneshot::Sender<codec::Response>) -> Self {
         Self {
-            peer_id,
-            connection_id,
-            request_id,
+            sender: Some(sender),
         }
+    }
+}
+
+#[pymethods]
+impl PyCallback {
+    fn send(mut this: PyRefMut<'_, Self>, response: PyCodecResponse) {
+        this.sender.take().unwrap().send(response.into()).unwrap();
     }
 }
 
@@ -231,7 +233,7 @@ impl Into<codec::Response> for PyCodecResponse {
 fn fleece_network_rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyProxy>()?;
     m.add_class::<PyProxyBuilder>()?;
-    m.add_class::<PyRequestId>()?;
+    m.add_class::<PyCallback>()?;
     m.add_class::<PyCodecRequest>()?;
     m.add_class::<PyCodecResponse>()?;
     Ok(())

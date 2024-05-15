@@ -27,12 +27,11 @@ use super::{
 
 type Medium<T> = oneshot::Sender<Result<T, Error>>;
 
-pub(super) struct EventLoop {
+pub struct EventLoop {
     swarm: Swarm<Behaviour>,
 
     command_tx: mpsc::Sender<Command>,
     command_rx: mpsc::Receiver<Command>,
-    event_tx: mpsc::Sender<Event>,
 
     center_addr: Multiaddr,
     center_peer_id: PeerId,
@@ -48,7 +47,6 @@ impl EventLoop {
         swarm: Swarm<Behaviour>,
         command_tx: mpsc::Sender<Command>,
         command_rx: mpsc::Receiver<Command>,
-        event_tx: mpsc::Sender<Event>,
         center_addr: Multiaddr,
         center_peer_id: PeerId,
     ) -> Self {
@@ -56,7 +54,6 @@ impl EventLoop {
             swarm,
             command_tx,
             command_rx,
-            event_tx,
             center_addr,
             center_peer_id,
             interval: time::interval(Duration::from_secs(1)),
@@ -133,22 +130,6 @@ impl EventLoop {
                     }
                 }
                 BehaviourEvent::Channel(event) => match event {
-                    channel::behaviour::Event::Request {
-                        peer_id,
-                        connection_id,
-                        request_id,
-                        request,
-                    } => {
-                        self.event_tx
-                            .send(Event::Request {
-                                peer_id,
-                                connection_id,
-                                request_id,
-                                request,
-                            })
-                            .await
-                            .unwrap();
-                    }
                     channel::behaviour::Event::MissedResponse {
                         request_id,
                         response,
@@ -288,21 +269,6 @@ impl EventLoop {
                     .channel
                     .send_request(&peer_id, request, sender);
             }
-            Command::Response {
-                peer_id,
-                connection_id,
-                request_id,
-                response,
-                sender,
-            } => {
-                self.swarm.behaviour_mut().channel.send_response(
-                    &peer_id,
-                    connection_id,
-                    request_id,
-                    response,
-                    sender,
-                );
-            }
         }
     }
 }
@@ -327,21 +293,5 @@ pub enum Command {
         peer_id: PeerId,
         request: codec::Request,
         sender: OneshotSender<codec::Response>,
-    },
-    Response {
-        peer_id: PeerId,
-        connection_id: ConnectionId,
-        request_id: channel::InboundRequestId,
-        response: codec::Response,
-        sender: OneshotSender<()>,
-    },
-}
-
-pub(super) enum Event {
-    Request {
-        peer_id: PeerId,
-        connection_id: ConnectionId,
-        request_id: InboundRequestId,
-        request: codec::Request,
     },
 }

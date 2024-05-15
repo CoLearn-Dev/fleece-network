@@ -12,24 +12,25 @@ use libp2p_swarm::{
     DialFailure, FromSwarm, NetworkBehaviour, NotifyHandler, PeerAddresses, THandler,
     THandlerInEvent, THandlerOutEvent, ToSwarm,
 };
+use tokio::sync::mpsc;
 use tracing::info;
 
 use super::{
     codec::Codec,
     handler::{self, ChannelFailure, Handler},
-    message::{InboundRequestId, OutboundRequestId},
-    Config, OneshotSender, OutboundHandle,
+    message::OutboundRequestId,
+    Config, InboundHandle, OneshotSender, OutboundHandle,
 };
 
 pub struct Behaviour<C: Codec> {
     codec: C,
     protocol: C::Protocol,
     config: Config,
+    sender: mpsc::Sender<InboundHandle<C::Request, C::Response>>,
 
     request_id: u64,
     pending_outbound_handles: HashMap<PeerId, Vec<OutboundHandle<C::Request, C::Response>>>,
-    pending_events:
-        VecDeque<ToSwarm<Event<C::Request, C::Response>, OutboundHandle<C::Request, C::Response>>>,
+    pending_events: VecDeque<ToSwarm<Event<C::Response>, OutboundHandle<C::Request, C::Response>>>,
     connected_peers: HashMap<PeerId, Vec<Connection>>,
     addresses: PeerAddresses,
 }
@@ -38,11 +39,17 @@ impl<C> Behaviour<C>
 where
     C: Codec + Send + Debug + Clone + Unpin + 'static,
 {
-    pub fn new(codec: C, protocol: C::Protocol, config: Config) -> Self {
+    pub fn new(
+        codec: C,
+        protocol: C::Protocol,
+        config: Config,
+        sender: mpsc::Sender<InboundHandle<C::Request, C::Response>>,
+    ) -> Self {
         Self {
             codec,
             protocol,
             config,
+            sender,
             request_id: 0,
             pending_outbound_handles: Default::default(),
             pending_events: Default::default(),
@@ -60,20 +67,8 @@ where
         let request_id = OutboundRequestId(self.request_id);
         self.request_id += 1;
 
-        let handle = OutboundHandle::Request(request_id, request, sender);
+        let handle = OutboundHandle::new(request_id, request, sender);
         self.send(peer_id, handle, None);
-    }
-
-    pub fn send_response(
-        &mut self,
-        peer_id: &PeerId,
-        connection_id: ConnectionId,
-        request_id: InboundRequestId,
-        response: C::Response,
-        sender: OneshotSender<()>,
-    ) {
-        let handle = OutboundHandle::Response(request_id, response, sender);
-        self.send(peer_id, handle, Some(connection_id));
     }
 
     pub fn update_rtt(&mut self, peer_id: &PeerId, connection_id: ConnectionId, rtt: Duration) {
@@ -187,20 +182,13 @@ where
                 }));
             if let Some(pending_handles) = self.pending_outbound_handles.remove(&peer_id) {
                 for handle in pending_handles {
-                    match handle {
-                        OutboundHandle::Request(_, _, callback) => callback
-                            .send(Err(io::Error::new(
-                                io::ErrorKind::ConnectionRefused,
-                                "Dial failure",
-                            )))
-                            .unwrap(),
-                        OutboundHandle::Response(_, _, callback) => callback
-                            .send(Err(io::Error::new(
-                                io::ErrorKind::ConnectionRefused,
-                                "Dial failure",
-                            )))
-                            .unwrap(),
-                    }
+                    handle
+                        .sender
+                        .send(Err(io::Error::new(
+                            io::ErrorKind::ConnectionRefused,
+                            "Dial failure",
+                        )))
+                        .unwrap();
                 }
             }
         }
@@ -213,7 +201,7 @@ where
 {
     type ConnectionHandler = Handler<C>;
 
-    type ToSwarm = Event<C::Request, C::Response>;
+    type ToSwarm = Event<C::Response>;
 
     fn handle_established_inbound_connection(
         &mut self,
@@ -228,6 +216,7 @@ where
             connection_id,
             self.codec.clone(),
             self.protocol.clone(),
+            self.sender.clone(),
             self.config.request_timeout,
         );
 
@@ -257,6 +246,7 @@ where
             connection_id,
             self.codec.clone(),
             self.protocol.clone(),
+            self.sender.clone(),
             self.config.request_timeout,
         );
 
@@ -295,20 +285,6 @@ where
         event: THandlerOutEvent<Self>,
     ) {
         match event {
-            handler::Event::Request {
-                peer_id,
-                connection_id,
-                request_id,
-                request,
-            } => {
-                self.pending_events
-                    .push_back(ToSwarm::GenerateEvent(Event::Request {
-                        peer_id,
-                        connection_id,
-                        request_id,
-                        request,
-                    }));
-            }
             handler::Event::MissedResponse {
                 request_id,
                 response,
@@ -358,13 +334,7 @@ impl Connection {
 
 /// The events emitted by a request-response [`Behaviour`].
 #[derive(Debug)]
-pub enum Event<Req, Resp> {
-    Request {
-        peer_id: PeerId,
-        connection_id: ConnectionId,
-        request_id: InboundRequestId,
-        request: Req,
-    },
+pub enum Event<Resp> {
     MissedResponse {
         request_id: OutboundRequestId,
         response: Resp,
