@@ -8,7 +8,6 @@ use libp2p::{
     swarm::{dial_opts::DialOpts, SwarmEvent},
     Multiaddr, PeerId, Swarm,
 };
-use libp2p_swarm::ConnectionId;
 use tokio::{
     sync::{mpsc, oneshot},
     time::{self, Interval},
@@ -16,7 +15,7 @@ use tokio::{
 use tracing::{debug, info, warn};
 
 use crate::{
-    channel::{self, InboundRequestId, OneshotSender},
+    channel::{self, OneshotSender},
     error::Error,
 };
 
@@ -132,7 +131,7 @@ impl EventLoop {
                 BehaviourEvent::Channel(event) => match event {
                     channel::behaviour::Event::MissedResponse {
                         request_id,
-                        response,
+                        response: _,
                     } => {
                         warn!("Missed response: {:?}", request_id);
                     }
@@ -182,7 +181,7 @@ impl EventLoop {
                 }
             }
             SwarmEvent::NewListenAddr {
-                listener_id,
+                listener_id: _,
                 address,
             } => {
                 info!("New listen address: {}", address);

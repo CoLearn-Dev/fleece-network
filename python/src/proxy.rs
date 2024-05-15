@@ -100,11 +100,7 @@ impl PyProxy {
         this.peer_id.to_string()
     }
 
-    fn send_request(
-        this: PyRefMut<'_, Self>,
-        peer_id: String,
-        request: PyCodecRequest,
-    ) -> PyCodecResponse {
+    fn send(this: PyRefMut<'_, Self>, peer_id: String, request: PyCodecRequest) -> PyCodecResponse {
         let (tx, rx) = oneshot::channel();
         this.command_tx
             .blocking_send(Command::Request {

@@ -1,7 +1,6 @@
 pub mod behaviour;
 pub mod codec;
 pub mod handler;
-pub mod legacy_stream;
 pub mod message;
 
 pub use behaviour::Behaviour;

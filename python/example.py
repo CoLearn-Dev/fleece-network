@@ -16,7 +16,8 @@ peer = Peer(
 )
 
 peer.run()
-peer.enable_log()
+print(peer.peer_id())
+# peer.enable_log()
 
 payload = b"0" * 8192 * 2
 

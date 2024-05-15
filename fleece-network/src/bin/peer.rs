@@ -6,7 +6,6 @@ use fleece_network::{
     peer::{codec, eventloop::Command, handler::Handler, peer::Peer},
 };
 use libp2p::{Multiaddr, PeerId};
-use log::info;
 use tokio::{
     io::{self, AsyncBufReadExt, BufReader},
     sync::oneshot,
@@ -51,7 +50,7 @@ async fn main() -> Result<(), Error> {
     let stdin = BufReader::new(io::stdin());
     let mut lines = stdin.lines();
     while let Some(line) = lines.next_line().await.unwrap() {
-        let request = codec::Request::new("hello".to_string(), Bytes::from(vec![0u8; 2]));
+        let request = codec::Request::new("hello".to_string(), Bytes::from(vec![0u8; 8192 * 2]));
         let (sender, receiver) = oneshot::channel();
         let start = Instant::now();
         // info!("Sending");

@@ -10,12 +10,9 @@ use std::{
 use futures::{stream::FuturesUnordered, Future, FutureExt, SinkExt, StreamExt};
 use libp2p::core::upgrade::ReadyUpgrade;
 use libp2p::PeerId;
-use libp2p_swarm::{
-    handler::{
-        ConnectionEvent, DialUpgradeError, FullyNegotiatedInbound, FullyNegotiatedOutbound,
-        ListenUpgradeError,
-    },
-    ConnectionId,
+use libp2p_swarm::handler::{
+    ConnectionEvent, DialUpgradeError, FullyNegotiatedInbound, FullyNegotiatedOutbound,
+    ListenUpgradeError,
 };
 use libp2p_swarm::{
     ConnectionHandler, ConnectionHandlerEvent, StreamUpgradeError, SubstreamProtocol,
@@ -31,12 +28,11 @@ use crate::channel::InboundHandle;
 use super::{
     codec::{Codec, CodecSink, CodecStream},
     message::{InboundMessage, InboundRequestId, OutboundRequestId},
-    OneshotSender, OutboundHandle, OutboundMessage,
+    OneshotSender, OutboundHandle, OutboundMessage, RequestId,
 };
 
 pub struct Handler<C: Codec> {
     peer_id: PeerId,
-    connection_id: ConnectionId,
     codec: C,
 
     stream: StatedStream<CodecStream<C::Decoder>>,
@@ -46,20 +42,18 @@ pub struct Handler<C: Codec> {
 
     protocol: C::Protocol,
     pending_events: VecDeque<Event<C>>,
-    pending_outbound_handles: VecDeque<OutboundHandle<C::Request, C::Response>>,
-    pending_outbound_response: VecDeque<OutboundMessage<C::Request, C::Response>>,
+    pending_outbound_messages: HashMap<RequestId, OutboundMessage<C::Request, C::Response>>,
     inbound_request_sender: mpsc::Sender<InboundHandle<C::Request, C::Response>>,
     outbound_request_callbacks: HashMap<OutboundRequestId, OneshotSender<C::Response>>,
     inbound_request_futures:
         FuturesUnordered<Pin<Box<dyn Future<Output = (InboundRequestId, C::Response)> + Send>>>,
     timeout_futures: FuturesUnordered<Pin<Box<dyn Future<Output = OutboundRequestId> + Send>>>,
-    workers: FuturesUnordered<Pin<Box<dyn Future<Output = ()> + Send>>>,
+    inbound_request_workers: FuturesUnordered<Pin<Box<dyn Future<Output = ()> + Send>>>,
 }
 
 impl<C: Codec> Handler<C> {
     pub(super) fn new(
         peer_id: PeerId,
-        connection_id: ConnectionId,
         codec: C,
         protocol: C::Protocol,
         inbound_request_sender: mpsc::Sender<InboundHandle<C::Request, C::Response>>,
@@ -67,20 +61,18 @@ impl<C: Codec> Handler<C> {
     ) -> Self {
         Self {
             peer_id,
-            connection_id,
             codec,
             stream: StatedStream::Pending(None),
             sink: StatedSink::Idle,
             request_timeout,
             protocol,
             pending_events: Default::default(),
-            pending_outbound_handles: Default::default(),
-            pending_outbound_response: Default::default(),
+            pending_outbound_messages: Default::default(),
             inbound_request_sender,
             outbound_request_callbacks: Default::default(),
             inbound_request_futures: Default::default(),
             timeout_futures: Default::default(),
-            workers: Default::default(),
+            inbound_request_workers: Default::default(),
         }
     }
 }
@@ -89,30 +81,42 @@ impl<C> Handler<C>
 where
     C: Codec + Send + Debug + Clone + Unpin + 'static,
 {
-    fn send(&mut self, handle: OutboundHandle<C::Request, C::Response>) {
+    fn send_request(&mut self, handle: OutboundHandle<C::Request, C::Response>) {
+        let request_timeout = self.request_timeout;
+        let request_id = handle.id;
+        let (message, callback) = handle.split();
+        self.timeout_futures.push(
+            async move {
+                time::sleep(request_timeout).await;
+                request_id
+            }
+            .boxed(),
+        );
+        self.outbound_request_callbacks.insert(request_id, callback);
+        self.send_message(message)
+    }
+
+    fn send_message(&mut self, message: OutboundMessage<C::Request, C::Response>) {
         match &mut self.sink {
             StatedSink::Active(sink, waker) => {
-                let request_id = handle.id;
-                let (message, callback) = handle.split();
+                let request_id = match message {
+                    OutboundMessage::Request(request_id, _) => Some(request_id),
+                    _ => None,
+                };
                 if let Err(_) = sink.start_send_unpin(message) {
                     self.sink = StatedSink::Failed(None);
-                    callback
-                        .send(Err(io::Error::new(
-                            io::ErrorKind::BrokenPipe,
-                            "Buffer is full",
-                        )))
-                        .unwrap();
-                } else {
-                    info!("Insert callback for request {:?}", request_id);
-                    self.outbound_request_callbacks.insert(request_id, callback);
-                    let request_timeout = self.request_timeout.clone();
-                    self.timeout_futures.push(
-                        async move {
-                            time::sleep(request_timeout).await;
-                            request_id
+                    if let Some(request_id) = request_id {
+                        if let Some(callback) = self.outbound_request_callbacks.remove(&request_id)
+                        {
+                            callback
+                                .send(Err(io::Error::new(
+                                    io::ErrorKind::BrokenPipe,
+                                    "Buffer is full",
+                                )))
+                                .unwrap();
                         }
-                        .boxed(),
-                    );
+                    }
+                } else {
                     waker.as_ref().map(|waker| waker.wake_by_ref());
                 }
             }
@@ -120,11 +124,13 @@ where
             StatedSink::Failed(waker) => {
                 waker.as_ref().map(|waker| waker.wake_by_ref());
                 self.sink = StatedSink::Idle;
-                self.pending_outbound_handles.push_back(handle);
+                self.pending_outbound_messages
+                    .insert(message.request_id(), message);
             }
 
             _ => {
-                self.pending_outbound_handles.push_back(handle);
+                self.pending_outbound_messages
+                    .insert(message.request_id(), message);
             }
         }
     }
@@ -147,10 +153,10 @@ where
                     protocol: SubstreamProtocol::new(ReadyUpgrade::new(self.protocol.clone()), ()),
                 });
             }
-            StatedSink::Active(sink, waker) => {
-                waker.replace(cx.waker().clone());
-                match sink.poll_flush_unpin(cx) {
-                    Poll::Ready(result) => match result {
+            StatedSink::Active(sink, waker) => match sink.poll_flush_unpin(cx) {
+                Poll::Ready(result) => {
+                    waker.replace(cx.waker().clone());
+                    match result {
                         Ok(_) => {}
                         Err(_) => {
                             info!("Fail when write into sink");
@@ -168,10 +174,10 @@ where
                                     .unwrap();
                             });
                         }
-                    },
-                    Poll::Pending => {}
+                    }
                 }
-            }
+                Poll::Pending => {}
+            },
             StatedSink::Failed(_) => {
                 self.sink = StatedSink::Failed(Some(cx.waker().clone()));
             }
@@ -206,7 +212,7 @@ where
                                 }));
                                 let handle = InboundHandle::new(request_id, request, sender);
                                 let sender = self.inbound_request_sender.clone();
-                                self.workers.push(Box::pin(async move {
+                                self.inbound_request_workers.push(Box::pin(async move {
                                     sender.send(handle).await.unwrap();
                                 }));
                             }
@@ -231,7 +237,6 @@ where
                         },
                         None => {
                             info!("Inbound stream {:?} fails", self.peer_id);
-                            self.stream = StatedStream::Pending(Some(cx.waker().clone()));
                             break;
                         }
                     },
@@ -248,37 +253,6 @@ where
         Poll::Pending
     }
 
-    fn reply(&mut self, message: OutboundMessage<C::Request, C::Response>) {
-        match &mut self.sink {
-            StatedSink::Active(sink, waker) => {
-                if let Err(_) = sink.start_send_unpin(message) {
-                    self.sink = StatedSink::Failed(None);
-                } else {
-                    waker.as_ref().map(|waker| waker.wake_by_ref());
-                }
-            }
-
-            _ => {
-                self.pending_outbound_response.push_back(message);
-            }
-        }
-    }
-
-    fn wakeup_stream(&mut self) {
-        match &self.stream {
-            StatedStream::Pending(Some(waker)) => waker.wake_by_ref(),
-            _ => {}
-        }
-    }
-
-    fn wakeup_sink(&mut self) {
-        match &self.sink {
-            StatedSink::Pending(Some(waker)) => waker.wake_by_ref(),
-            StatedSink::Failed(Some(waker)) => waker.wake_by_ref(),
-            _ => {}
-        }
-    }
-
     fn on_fully_negotiated_inbound(
         &mut self,
         FullyNegotiatedInbound {
@@ -289,7 +263,10 @@ where
             <Self as ConnectionHandler>::InboundOpenInfo,
         >,
     ) {
-        self.wakeup_stream();
+        match &self.stream {
+            StatedStream::Pending(Some(waker)) => waker.wake_by_ref(),
+            _ => {}
+        }
         self.stream = StatedStream::Active(CodecStream::new(stream, self.codec.new_decoder()));
     }
 
@@ -303,19 +280,17 @@ where
             <Self as ConnectionHandler>::OutboundOpenInfo,
         >,
     ) {
-        self.wakeup_sink();
+        match &self.sink {
+            StatedSink::Pending(Some(waker)) => waker.wake_by_ref(),
+            StatedSink::Failed(Some(waker)) => waker.wake_by_ref(),
+            _ => {}
+        }
         self.sink = StatedSink::Active(CodecSink::new(stream, self.codec.new_encoder()), None);
 
-        let pending_outbound_handles =
-            mem::replace(&mut self.pending_outbound_handles, VecDeque::new());
-        for message in pending_outbound_handles {
-            self.send(message);
-        }
-
         let pending_outbound_messages =
-            mem::replace(&mut self.pending_outbound_response, VecDeque::new());
-        for message in pending_outbound_messages {
-            self.reply(message);
+            mem::replace(&mut self.pending_outbound_messages, Default::default());
+        for message in pending_outbound_messages.into_values() {
+            self.send_message(message);
         }
     }
 
@@ -397,7 +372,7 @@ where
         while !self.inbound_request_futures.is_empty() {
             match self.inbound_request_futures.poll_next_unpin(cx) {
                 Poll::Ready(Some((request_id, response))) => {
-                    self.reply(OutboundMessage::Response(request_id, response));
+                    self.send_message(OutboundMessage::Response(request_id, response));
                 }
                 _ => break,
             }
@@ -419,8 +394,8 @@ where
             }
         }
 
-        while !self.workers.is_empty() {
-            match self.workers.poll_next_unpin(cx) {
+        while !self.inbound_request_workers.is_empty() {
+            match self.inbound_request_workers.poll_next_unpin(cx) {
                 Poll::Ready(Some(_)) => {}
                 _ => break,
             }
@@ -430,7 +405,7 @@ where
     }
 
     fn on_behaviour_event(&mut self, event: OutboundHandle<C::Request, C::Response>) {
-        self.send(event);
+        self.send_request(event);
     }
 
     fn on_connection_event(

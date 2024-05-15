@@ -127,33 +127,6 @@ where
             .and_then(|connections| connections.iter_mut().min_by_key(|c| c.rtt))
     }
 
-    // fn try_send(
-    //     &mut self,
-    //     peer_id: &PeerId,
-    //     message: OutboundMessage<C::Request, C::Response>,
-    // ) -> Option<OutboundMessage<C::Request, C::Response>> {
-    //     if let Some(connections) = self.connected_peers.get_mut(peer_id) {
-    //         if let Some(connection) = connections.iter_mut().min_by_key(|c| c.rtt) {
-    //             match message {
-    //                 OutboundMessage::Request(request_id, _) => {
-    //                     connection.pending_outbound_responses.insert(request_id);
-    //                 }
-    //                 OutboundMessage::Response(request_id, _) => {
-    //                     connection.pending_inbound_responses.remove(&request_id);
-    //                 }
-    //             }
-    //             self.pending_events.push_back(ToSwarm::NotifyHandler {
-    //                 peer_id: *peer_id,
-    //                 handler: NotifyHandler::One(connection.id),
-    //                 event: message,
-    //             });
-    //             return None;
-    //         }
-    //     }
-
-    //     Some(message)
-    // }
-
     fn on_connection_closed(&mut self, ConnectionClosed { peer_id, .. }: ConnectionClosed) {
         info!("Connection closed: {:?}", peer_id);
         let connections = self
@@ -213,7 +186,6 @@ where
         info!("Established inbound connection: {:?}", peer_id);
         let handler = Handler::new(
             peer_id,
-            connection_id,
             self.codec.clone(),
             self.protocol.clone(),
             self.sender.clone(),
@@ -243,7 +215,6 @@ where
         );
         let mut handler = Handler::new(
             peer_id,
-            connection_id,
             self.codec.clone(),
             self.protocol.clone(),
             self.sender.clone(),

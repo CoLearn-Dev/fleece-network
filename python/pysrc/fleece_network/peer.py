@@ -3,11 +3,11 @@ from threading import Thread
 from typing import Callable, Optional
 
 from .fleece_network_rust import (  # type: ignore
+    PyCallback,
     PyCodecRequest,
     PyCodecResponse,
     PyProxy,
     PyProxyBuilder,
-    PyRequestId,
 )
 
 
@@ -35,7 +35,7 @@ class Peer:
         return self.proxy.peer_id()
 
     def send(self, peer_id: str, route: str, payload: bytes) -> tuple[str, bytes]:
-        response = self.proxy.send_request(
+        response = self.proxy.send(
             peer_id,
             PyCodecRequest(
                 route,
@@ -52,15 +52,15 @@ class Peer:
         while True:
             r = self.proxy.recv()
             if r is not None:
-                request_id, request = r
-                self.pool.submit(self._delegate, request_id, request)
+                request, callback = r
+                self.pool.submit(self._delegate, request, callback)
             else:
                 break
 
     def enable_log(self):
         self.proxy.enable_log()
 
-    def _delegate(self, request_id: PyRequestId, request: PyCodecRequest):
+    def _delegate(self, request: PyCodecRequest, callback: PyCallback):
         response = self.handlers[request.route](bytes(request.payload))
         response = PyCodecResponse("Ok", response.encode())
-        self.proxy.send_response(request_id, response)
+        callback.send(response)
