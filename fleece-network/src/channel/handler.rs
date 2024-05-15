@@ -136,6 +136,148 @@ where
         }
     }
 
+    fn flush(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<
+        ConnectionHandlerEvent<
+            <Self as ConnectionHandler>::OutboundProtocol,
+            <Self as ConnectionHandler>::OutboundOpenInfo,
+            <Self as ConnectionHandler>::ToBehaviour,
+        >,
+    > {
+        match &mut self.sink {
+            StatedSink::Idle => {
+                self.sink = StatedSink::Pending(None);
+                info!("Send outbound substream request to {:?}", self.peer_id);
+                return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
+                    protocol: SubstreamProtocol::new(ReadyUpgrade::new(self.protocol.clone()), ()),
+                });
+            }
+            StatedSink::Active(sink, waker) => {
+                waker.replace(cx.waker().clone());
+                match sink.poll_flush_unpin(cx) {
+                    Poll::Ready(result) => match result {
+                        Ok(_) => {
+                            let callbacks = mem::replace(
+                                &mut self.outbound_response_callbacks,
+                                Default::default(),
+                            );
+                            callbacks.into_values().for_each(|callback| {
+                                callback.send(Ok(())).unwrap();
+                            });
+                        }
+                        Err(_) => {
+                            info!("Fail when write into sink");
+                            self.sink = StatedSink::Failed(Some(cx.waker().clone()));
+                            let request_callbacks = mem::replace(
+                                &mut self.outbound_request_callbacks,
+                                Default::default(),
+                            );
+                            request_callbacks.into_values().for_each(|callback| {
+                                callback
+                                    .send(Err(io::Error::new(
+                                        io::ErrorKind::BrokenPipe,
+                                        "Failed to send",
+                                    )))
+                                    .unwrap();
+                            });
+                            let response_callbacks = mem::replace(
+                                &mut self.outbound_response_callbacks,
+                                Default::default(),
+                            );
+                            response_callbacks.into_values().for_each(|callback| {
+                                callback
+                                    .send(Err(io::Error::new(
+                                        io::ErrorKind::BrokenPipe,
+                                        "Failed to send",
+                                    )))
+                                    .unwrap();
+                            });
+                        }
+                    },
+                    Poll::Pending => {}
+                }
+            }
+            StatedSink::Failed(_) => {
+                self.sink = StatedSink::Failed(Some(cx.waker().clone()));
+            }
+            StatedSink::Pending(_) => {
+                self.sink = StatedSink::Pending(Some(cx.waker().clone()));
+            }
+        }
+
+        Poll::Pending
+    }
+
+    fn recv(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<
+        ConnectionHandlerEvent<
+            <Self as ConnectionHandler>::OutboundProtocol,
+            <Self as ConnectionHandler>::OutboundOpenInfo,
+            <Self as ConnectionHandler>::ToBehaviour,
+        >,
+    > {
+        loop {
+            match &mut self.stream {
+                StatedStream::Active(stream) => match stream.poll_next_unpin(cx) {
+                    Poll::Ready(option) => match option {
+                        Some(message) => match message {
+                            InboundMessage::Request(request_id, request) => {
+                                info!("Received request from {:?}", self.peer_id);
+                                // let (sender, receiver) = oneshot::channel();
+                                // self.inbound_request_futures.push(Box::pin(async move {
+                                //     (request_id, receiver.await.unwrap())
+                                // }));
+                                return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(
+                                    Event::Request {
+                                        connection_id: self.connection_id,
+                                        peer_id: self.peer_id,
+                                        request_id,
+                                        request,
+                                    },
+                                ));
+                            }
+                            InboundMessage::Response(request_id, response) => {
+                                info!(
+                                    "Received response from {:?} for {:?}",
+                                    self.peer_id, request_id
+                                );
+                                if let Some(sender) =
+                                    self.outbound_request_callbacks.remove(&request_id)
+                                {
+                                    sender.send(Ok(response)).unwrap();
+                                } else {
+                                    return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(
+                                        Event::MissedResponse {
+                                            request_id,
+                                            response,
+                                        },
+                                    ));
+                                }
+                            }
+                        },
+                        None => {
+                            info!("Inbound stream {:?} fails", self.peer_id);
+                            self.stream = StatedStream::Pending(Some(cx.waker().clone()));
+                            break;
+                        }
+                    },
+                    Poll::Pending => break,
+                },
+
+                StatedStream::Pending(_) => {
+                    self.stream = StatedStream::Pending(Some(cx.waker().clone()));
+                    break;
+                }
+            }
+        }
+
+        Poll::Pending
+    }
+
     fn on_fully_negotiated_inbound(
         &mut self,
         FullyNegotiatedInbound {
@@ -229,140 +371,26 @@ where
 
     type OutboundOpenInfo = ();
 
-    fn listen_protocol(
-        &self,
-    ) -> libp2p_swarm::SubstreamProtocol<Self::InboundProtocol, Self::InboundOpenInfo> {
+    fn listen_protocol(&self) -> SubstreamProtocol<Self::InboundProtocol, Self::InboundOpenInfo> {
         SubstreamProtocol::new(ReadyUpgrade::new(self.protocol.clone()), ())
     }
 
     fn poll(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> std::task::Poll<
-        libp2p_swarm::ConnectionHandlerEvent<
-            Self::OutboundProtocol,
-            Self::OutboundOpenInfo,
-            Self::ToBehaviour,
-        >,
+    ) -> Poll<
+        ConnectionHandlerEvent<Self::OutboundProtocol, Self::OutboundOpenInfo, Self::ToBehaviour>,
     > {
-        match &mut self.sink {
-            StatedSink::Idle => {
-                self.sink = StatedSink::Pending(None);
-                info!("Send outbound substream request to {:?}", self.peer_id);
-                return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
-                    protocol: SubstreamProtocol::new(ReadyUpgrade::new(self.protocol.clone()), ()),
-                });
-            }
-            StatedSink::Active(sink, waker) => {
-                waker.replace(cx.waker().clone());
-                match sink.poll_flush_unpin(cx) {
-                    Poll::Ready(result) => match result {
-                        Ok(_) => {
-                            let callbacks = mem::replace(
-                                &mut self.outbound_response_callbacks,
-                                Default::default(),
-                            );
-                            callbacks.into_values().for_each(|callback| {
-                                callback.send(Ok(())).unwrap();
-                            });
-                        }
-                        Err(_) => {
-                            info!("Fail when write into sink");
-                            self.sink = StatedSink::Failed(Some(cx.waker().clone()));
-                            let request_callbacks = mem::replace(
-                                &mut self.outbound_request_callbacks,
-                                Default::default(),
-                            );
-                            request_callbacks.into_values().for_each(|callback| {
-                                callback
-                                    .send(Err(io::Error::new(
-                                        io::ErrorKind::BrokenPipe,
-                                        "Failed to send",
-                                    )))
-                                    .unwrap();
-                            });
-                            let response_callbacks = mem::replace(
-                                &mut self.outbound_response_callbacks,
-                                Default::default(),
-                            );
-                            response_callbacks.into_values().for_each(|callback| {
-                                callback
-                                    .send(Err(io::Error::new(
-                                        io::ErrorKind::BrokenPipe,
-                                        "Failed to send",
-                                    )))
-                                    .unwrap();
-                            });
-                        }
-                    },
-                    Poll::Pending => {}
-                }
-            }
-            StatedSink::Failed(_) => {
-                self.sink = StatedSink::Failed(Some(cx.waker().clone()));
-            }
-            StatedSink::Pending(_) => {
-                self.sink = StatedSink::Pending(Some(cx.waker().clone()));
-            }
-        }
-
         if let Some(event) = self.pending_events.pop_front() {
             return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(event));
         }
 
-        loop {
-            match &mut self.stream {
-                StatedStream::Active(stream) => match stream.poll_next_unpin(cx) {
-                    Poll::Ready(option) => match option {
-                        Some(message) => match message {
-                            InboundMessage::Request(request_id, request) => {
-                                info!("Received request from {:?}", self.peer_id);
-                                // let (sender, receiver) = oneshot::channel();
-                                // self.inbound_request_futures.push(Box::pin(async move {
-                                //     (request_id, receiver.await.unwrap())
-                                // }));
-                                return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(
-                                    Event::Request {
-                                        connection_id: self.connection_id,
-                                        peer_id: self.peer_id,
-                                        request_id,
-                                        request,
-                                    },
-                                ));
-                            }
-                            InboundMessage::Response(request_id, response) => {
-                                info!(
-                                    "Received response from {:?} for {:?}",
-                                    self.peer_id, request_id
-                                );
-                                if let Some(sender) =
-                                    self.outbound_request_callbacks.remove(&request_id)
-                                {
-                                    sender.send(Ok(response)).unwrap();
-                                } else {
-                                    return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(
-                                        Event::MissedResponse {
-                                            request_id,
-                                            response,
-                                        },
-                                    ));
-                                }
-                            }
-                        },
-                        None => {
-                            info!("Inbound stream {:?} fails", self.peer_id);
-                            self.stream = StatedStream::Pending(Some(cx.waker().clone()));
-                            break;
-                        }
-                    },
-                    Poll::Pending => break,
-                },
+        if let Poll::Ready(event) = self.flush(cx) {
+            return Poll::Ready(event);
+        }
 
-                StatedStream::Pending(_) => {
-                    self.stream = StatedStream::Pending(Some(cx.waker().clone()));
-                    break;
-                }
-            }
+        if let Poll::Ready(event) = self.recv(cx) {
+            return Poll::Ready(event);
         }
 
         // loop {
