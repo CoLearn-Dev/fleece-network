@@ -3,6 +3,7 @@ use std::{io, pin::Pin, time::Duration};
 use crossbeam_channel::{self, unbounded};
 use futures::Future;
 use libp2p::{identity, multiaddr::Protocol, swarm, Multiaddr, PeerId, Swarm};
+use swarm::ConnectionId;
 use tokio::{
     select,
     sync::{mpsc, oneshot},
@@ -21,7 +22,8 @@ type Medium<T> = oneshot::Sender<Result<T, io::Error>>;
 pub struct Proxy {
     pub peer_id: PeerId,
     pub command_tx: mpsc::Sender<Command>,
-    pub message_rx: crossbeam_channel::Receiver<(PeerId, InboundRequestId, codec::Request)>,
+    pub message_rx:
+        crossbeam_channel::Receiver<(PeerId, ConnectionId, InboundRequestId, codec::Request)>,
 }
 
 impl Proxy {
@@ -68,25 +70,14 @@ impl Proxy {
             center_peer_id.clone(),
         );
 
-        let command_tx_clone = command_tx.clone();
         tokio::spawn(eventloop.run());
         let future = Box::pin(async move {
-            // initial dial
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            command_tx_clone
-                .send(Command::Dial {
-                    peer_id: center_peer_id,
-                    peer_addr: Some(center_addr),
-                    sender: None,
-                })
-                .await
-                .unwrap();
             loop {
                 select! {
                     event = event_rx.recv() => match event {
                         Some(event) => match event {
-                            Event::Request { peer_id, request_id, request } => {
-                                message_tx.send((peer_id, request_id, request)).unwrap();
+                            Event::Request { peer_id, connection_id, request_id, request } => {
+                                message_tx.send((peer_id, connection_id, request_id, request)).unwrap();
                             },
                         },
                         None => break,

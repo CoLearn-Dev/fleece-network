@@ -1,10 +1,10 @@
 import pickle
 from typing import Any
-
 from safetensors.torch import load, save
+from torch import Tensor
 
 
-def dumps(tensors: dict[str, "Tensor"], metadata: dict[str, Any]) -> bytes:
+def dumps(tensors: dict[str, Tensor], metadata: dict[str, Any]) -> bytes:
     metadata_bytes = pickle.dumps(metadata)
     tensors_bytes = save(tensors)
     return (
@@ -14,7 +14,7 @@ def dumps(tensors: dict[str, "Tensor"], metadata: dict[str, Any]) -> bytes:
     )
 
 
-def loads(b: bytes) -> tuple[dict[str, "Tensor"], dict[str, Any]]:
+def loads(b: bytes) -> tuple[dict[str, Tensor], dict[str, Any]]:
     metadata_length = int.from_bytes(b[:4], byteorder="big")
     metadata = pickle.loads(b[4 : 4 + metadata_length])
     tensors = load(b[4 + metadata_length :])

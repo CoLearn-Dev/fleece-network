@@ -1,6 +1,6 @@
 [package]
 name = "fleece-network-python"
-version = "0.4.0"
+version = "0.1.0"
 edition = "2021"
 
 [lib]
@@ -20,6 +20,7 @@ pyo3-log = "0.10.0"
 safetensors = "0.4.3"
 tokio = { version = "1.37.0", features = ["full"] }
 tower = { version = "0.4.13", features = ["util"] }
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 
 [profile.bench]
 opt-level = 3

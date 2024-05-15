@@ -1,5 +1,5 @@
 [project]
-name = "fleece_network"
+name = "fleece-network"
 requires-python = ">=3.8"
 classifiers = [
   "Programming Language :: Rust",

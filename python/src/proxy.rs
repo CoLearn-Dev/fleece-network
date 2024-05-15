@@ -6,9 +6,10 @@ use fleece_network::{
     channel::InboundRequestId,
     peer::{codec, eventloop::Command, proxy::Proxy},
 };
-use libp2p::PeerId;
+use libp2p::{swarm::ConnectionId, PeerId};
 use pyo3::prelude::*;
 use tokio::sync::oneshot;
+use tracing_subscriber::EnvFilter;
 
 #[pyclass]
 #[derive(Default)]
@@ -72,6 +73,17 @@ struct PyProxy {
 
 #[pymethods]
 impl PyProxy {
+    fn enable_log(this: PyRefMut<'_, Self>) {
+        let _ = tracing_subscriber::fmt()
+            .event_format(
+                tracing_subscriber::fmt::format()
+                    .with_file(true)
+                    .with_line_number(true),
+            )
+            .with_env_filter(EnvFilter::from_default_env())
+            .try_init();
+    }
+
     fn peer_id(this: PyRef<'_, Self>) -> String {
         this.inner.peer_id.to_string()
     }
@@ -99,6 +111,7 @@ impl PyProxy {
             .command_tx
             .blocking_send(Command::Response {
                 peer_id: request_id.peer_id,
+                connection_id: request_id.connection_id,
                 request_id: request_id.request_id,
                 response: response.into(),
                 sender: tx,
@@ -110,9 +123,10 @@ impl PyProxy {
     fn recv(this: Py<Self>, py: Python<'_>) -> Option<(PyRequestId, PyCodecRequest)> {
         let message_rx = this.borrow(py).inner.message_rx.clone();
         Python::allow_threads(py, move || match message_rx.recv() {
-            Ok((peer_id, request_id, request)) => {
-                Some((PyRequestId::new(peer_id, request_id), request.into()))
-            }
+            Ok((peer_id, connection_id, request_id, request)) => Some((
+                PyRequestId::new(peer_id, connection_id, request_id),
+                request.into(),
+            )),
             Err(_) => None,
         })
     }
@@ -122,13 +136,15 @@ impl PyProxy {
 #[derive(Clone)]
 struct PyRequestId {
     peer_id: PeerId,
+    connection_id: ConnectionId,
     request_id: InboundRequestId,
 }
 
 impl PyRequestId {
-    fn new(peer_id: PeerId, request_id: InboundRequestId) -> Self {
+    fn new(peer_id: PeerId, connection_id: ConnectionId, request_id: InboundRequestId) -> Self {
         Self {
             peer_id,
+            connection_id,
             request_id,
         }
     }

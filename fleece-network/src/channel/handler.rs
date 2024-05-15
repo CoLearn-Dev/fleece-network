@@ -10,9 +10,12 @@ use std::{
 use futures::{stream::FuturesUnordered, Future, FutureExt, SinkExt, StreamExt};
 use libp2p::core::upgrade::ReadyUpgrade;
 use libp2p::PeerId;
-use libp2p_swarm::handler::{
-    ConnectionEvent, DialUpgradeError, FullyNegotiatedInbound, FullyNegotiatedOutbound,
-    ListenUpgradeError,
+use libp2p_swarm::{
+    handler::{
+        ConnectionEvent, DialUpgradeError, FullyNegotiatedInbound, FullyNegotiatedOutbound,
+        ListenUpgradeError,
+    },
+    ConnectionId,
 };
 use libp2p_swarm::{
     ConnectionHandler, ConnectionHandlerEvent, StreamUpgradeError, SubstreamProtocol,
@@ -28,6 +31,7 @@ use super::{
 
 pub struct Handler<C: Codec> {
     peer_id: PeerId,
+    connection_id: ConnectionId,
     codec: C,
 
     stream: StatedStream<CodecStream<C::Decoder>>,
@@ -48,12 +52,14 @@ pub struct Handler<C: Codec> {
 impl<C: Codec> Handler<C> {
     pub(super) fn new(
         peer_id: PeerId,
+        connection_id: ConnectionId,
         codec: C,
         protocol: C::Protocol,
         request_timeout: Duration,
     ) -> Self {
         Self {
             peer_id,
+            connection_id,
             codec,
             stream: StatedStream::Pending(None),
             sink: StatedSink::Idle,
@@ -87,6 +93,7 @@ where
                             )))
                             .unwrap();
                     } else {
+                        info!("Insert callback for request {:?}", request_id);
                         self.outbound_request_callbacks.insert(request_id, callback);
                         let request_timeout = self.request_timeout.clone();
                         self.timeout_futures.push(
@@ -176,6 +183,7 @@ where
             <Self as ConnectionHandler>::OutboundProtocol,
         >,
     ) {
+        info!("Dial upgrade error: {:?}", error);
         match error {
             StreamUpgradeError::Timeout => {
                 self.pending_events
@@ -200,6 +208,7 @@ where
             <Self as ConnectionHandler>::InboundProtocol,
         >,
     ) {
+        info!("Listen upgrade error: {:?}", error);
         void::unreachable(error)
     }
 }
@@ -258,6 +267,7 @@ where
                             });
                         }
                         Err(_) => {
+                            info!("Fail when write into sink");
                             self.sink = StatedSink::Failed(Some(cx.waker().clone()));
                             let request_callbacks = mem::replace(
                                 &mut self.outbound_request_callbacks,
@@ -313,6 +323,7 @@ where
                                 // }));
                                 return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(
                                     Event::Request {
+                                        connection_id: self.connection_id,
                                         peer_id: self.peer_id,
                                         request_id,
                                         request,
@@ -320,7 +331,10 @@ where
                                 ));
                             }
                             InboundMessage::Response(request_id, response) => {
-                                info!("Received response from {:?}", self.peer_id);
+                                info!(
+                                    "Received response from {:?} for {:?}",
+                                    self.peer_id, request_id
+                                );
                                 if let Some(sender) =
                                     self.outbound_request_callbacks.remove(&request_id)
                                 {
@@ -445,6 +459,7 @@ where
 {
     Request {
         peer_id: PeerId,
+        connection_id: ConnectionId,
         request_id: InboundRequestId,
         request: C::Request,
     },

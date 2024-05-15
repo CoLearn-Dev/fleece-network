@@ -8,11 +8,12 @@ use libp2p::{
     swarm::{dial_opts::DialOpts, SwarmEvent},
     Multiaddr, PeerId, Swarm,
 };
+use libp2p_swarm::ConnectionId;
 use tokio::{
     sync::{mpsc, oneshot},
     time::{self, Interval},
 };
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::{
     channel::{self, InboundRequestId, OneshotSender},
@@ -134,19 +135,26 @@ impl EventLoop {
                 BehaviourEvent::Channel(event) => match event {
                     channel::behaviour::Event::Request {
                         peer_id,
+                        connection_id,
                         request_id,
                         request,
                     } => {
                         self.event_tx
                             .send(Event::Request {
                                 peer_id,
+                                connection_id,
                                 request_id,
                                 request,
                             })
                             .await
                             .unwrap();
                     }
-                    channel::behaviour::Event::MissedResponse { .. } => todo!(),
+                    channel::behaviour::Event::MissedResponse {
+                        request_id,
+                        response,
+                    } => {
+                        warn!("Missed response: {:?}", request_id);
+                    }
                     channel::behaviour::Event::Failure { peer_id, failure } => {
                         info!("Channel failure {:?}: {:?}", peer_id, failure);
                     }
@@ -192,7 +200,12 @@ impl EventLoop {
                     }
                 }
             }
-            SwarmEvent::NewListenAddr { .. } => {}
+            SwarmEvent::NewListenAddr {
+                listener_id,
+                address,
+            } => {
+                info!("New listen address: {}", address);
+            }
             SwarmEvent::ExpiredListenAddr { .. } => {}
             SwarmEvent::ListenerClosed { .. } => {}
             SwarmEvent::ListenerError { .. } => {}
@@ -200,7 +213,6 @@ impl EventLoop {
             SwarmEvent::NewExternalAddrCandidate { .. } => {}
             SwarmEvent::ExternalAddrConfirmed { address } => {
                 info!("External address confirmed: {}", address);
-                println!("External address confirmed: {}", address);
             }
             SwarmEvent::ExternalAddrExpired { .. } => {}
             SwarmEvent::NewExternalAddrOfPeer { peer_id, address } => {
@@ -278,14 +290,18 @@ impl EventLoop {
             }
             Command::Response {
                 peer_id,
+                connection_id,
                 request_id,
                 response,
                 sender,
             } => {
-                self.swarm
-                    .behaviour_mut()
-                    .channel
-                    .send_response(&peer_id, request_id, response, sender);
+                self.swarm.behaviour_mut().channel.send_response(
+                    &peer_id,
+                    connection_id,
+                    request_id,
+                    response,
+                    sender,
+                );
             }
         }
     }
@@ -314,6 +330,7 @@ pub enum Command {
     },
     Response {
         peer_id: PeerId,
+        connection_id: ConnectionId,
         request_id: channel::InboundRequestId,
         response: codec::Response,
         sender: OneshotSender<()>,
@@ -323,6 +340,7 @@ pub enum Command {
 pub(super) enum Event {
     Request {
         peer_id: PeerId,
+        connection_id: ConnectionId,
         request_id: InboundRequestId,
         request: codec::Request,
     },

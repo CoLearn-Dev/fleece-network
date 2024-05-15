@@ -61,18 +61,19 @@ where
         self.request_id += 1;
 
         let handle = OutboundHandle::Request(request_id, request, sender);
-        self.send(peer_id, handle);
+        self.send(peer_id, handle, None);
     }
 
     pub fn send_response(
         &mut self,
         peer_id: &PeerId,
+        connection_id: ConnectionId,
         request_id: InboundRequestId,
         response: C::Response,
         sender: OneshotSender<()>,
     ) {
         let handle = OutboundHandle::Response(request_id, response, sender);
-        self.send(peer_id, handle);
+        self.send(peer_id, handle, Some(connection_id));
     }
 
     pub fn update_rtt(&mut self, peer_id: &PeerId, connection_id: ConnectionId, rtt: Duration) {
@@ -84,8 +85,18 @@ where
         connection.rtt = rtt;
     }
 
-    fn send(&mut self, peer_id: &PeerId, handle: OutboundHandle<C::Request, C::Response>) {
-        if let Some(connection) = self.get_connection(peer_id) {
+    fn send(
+        &mut self,
+        peer_id: &PeerId,
+        handle: OutboundHandle<C::Request, C::Response>,
+        connection_id: Option<ConnectionId>,
+    ) {
+        let connection = if let Some(connection_id) = connection_id {
+            self.get_connection(peer_id, connection_id)
+        } else {
+            self.get_min_connection(peer_id)
+        };
+        if let Some(connection) = connection {
             let connection_id = connection.id;
             info!("Try to send through connection {:?}", connection_id);
             self.pending_events.push_back(ToSwarm::NotifyHandler {
@@ -105,7 +116,17 @@ where
         }
     }
 
-    fn get_connection(&mut self, peer_id: &PeerId) -> Option<&mut Connection> {
+    fn get_connection(
+        &mut self,
+        peer_id: &PeerId,
+        connection_id: ConnectionId,
+    ) -> Option<&mut Connection> {
+        self.connected_peers
+            .get_mut(peer_id)
+            .and_then(|connections| connections.iter_mut().find(|c| c.id == connection_id))
+    }
+
+    fn get_min_connection(&mut self, peer_id: &PeerId) -> Option<&mut Connection> {
         self.connected_peers
             .get_mut(peer_id)
             .and_then(|connections| connections.iter_mut().min_by_key(|c| c.rtt))
@@ -139,6 +160,7 @@ where
     // }
 
     fn on_connection_closed(&mut self, ConnectionClosed { peer_id, .. }: ConnectionClosed) {
+        info!("Connection closed: {:?}", peer_id);
         let connections = self
             .connected_peers
             .get_mut(&peer_id)
@@ -156,7 +178,7 @@ where
     }
 
     fn on_dial_failure(&mut self, DialFailure { peer_id, error, .. }: DialFailure) {
-        println!("Dial failure: {:?}", error);
+        info!("Dial failure: {:?}", error);
         if let Some(peer_id) = peer_id {
             self.pending_events
                 .push_back(ToSwarm::GenerateEvent(Event::Failure {
@@ -200,8 +222,10 @@ where
         _local_addr: &Multiaddr,
         _remote_addr: &Multiaddr,
     ) -> Result<libp2p_swarm::THandler<Self>, libp2p_swarm::ConnectionDenied> {
+        info!("Established inbound connection: {:?}", peer_id);
         let handler = Handler::new(
             peer_id,
+            connection_id,
             self.codec.clone(),
             self.protocol.clone(),
             self.config.request_timeout,
@@ -223,12 +247,14 @@ where
         addr: &Multiaddr,
         _role_override: Endpoint,
     ) -> Result<THandler<Self>, ConnectionDenied> {
+        info!("Established outbound connection: {:?}", peer_id);
         info!(
             "Established outbound connection {:?} to {:?} at {:?}",
             connection_id, peer_id, addr
         );
         let mut handler = Handler::new(
             peer_id,
+            connection_id,
             self.codec.clone(),
             self.protocol.clone(),
             self.config.request_timeout,
@@ -271,12 +297,14 @@ where
         match event {
             handler::Event::Request {
                 peer_id,
+                connection_id,
                 request_id,
                 request,
             } => {
                 self.pending_events
                     .push_back(ToSwarm::GenerateEvent(Event::Request {
                         peer_id,
+                        connection_id,
                         request_id,
                         request,
                     }));
@@ -333,6 +361,7 @@ impl Connection {
 pub enum Event<Req, Resp> {
     Request {
         peer_id: PeerId,
+        connection_id: ConnectionId,
         request_id: InboundRequestId,
         request: Req,
     },

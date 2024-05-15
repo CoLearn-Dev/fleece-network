@@ -78,6 +78,7 @@ impl Peer {
                 Some(event) => match event {
                     Event::Request {
                         peer_id,
+                        connection_id,
                         request_id,
                         request,
                     } => {
@@ -90,6 +91,7 @@ impl Peer {
                                 command_tx
                                     .send(Command::Response {
                                         peer_id,
+                                        connection_id,
                                         request_id,
                                         response: codec::Response::new(
                                             String::from("error"),
@@ -103,6 +105,7 @@ impl Peer {
                                 command_tx
                                     .send(Command::Response {
                                         peer_id,
+                                        connection_id,
                                         request_id,
                                         response: response.unwrap(),
                                         sender,
