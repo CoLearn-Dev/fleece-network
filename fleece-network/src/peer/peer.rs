@@ -51,7 +51,7 @@ impl Peer {
 
         // setup for stream
 
-        let (command_tx, command_rx) = mpsc::channel(32);
+        let (command_tx, command_rx) = mpsc::channel(128);
         let eventloop = EventLoop::new(
             swarm,
             command_tx.clone(),

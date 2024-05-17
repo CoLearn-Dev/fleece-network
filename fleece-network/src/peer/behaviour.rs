@@ -29,7 +29,7 @@ impl Behaviour {
         mpsc::Receiver<InboundHandle<codec::Request, codec::Response>>,
     ) {
         let codec = codec::Codec::default();
-        let (sender, receiver) = mpsc::channel(16);
+        let (sender, receiver) = mpsc::channel(128);
         (
             Self {
                 identify: identify::Behaviour::new(identify::Config::new(

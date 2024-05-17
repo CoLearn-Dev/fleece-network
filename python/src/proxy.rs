@@ -100,16 +100,25 @@ impl PyProxy {
         this.peer_id.to_string()
     }
 
-    fn send(this: PyRefMut<'_, Self>, peer_id: String, request: PyCodecRequest) -> PyCodecResponse {
+    fn send(
+        this: Py<Self>,
+        peer_id: String,
+        request: PyCodecRequest,
+        py: Python<'_>,
+    ) -> PyCodecResponse {
         let (tx, rx) = oneshot::channel();
-        this.command_tx
-            .blocking_send(Command::Request {
-                peer_id: peer_id.parse().unwrap(),
-                request: request.into(),
-                sender: tx,
-            })
-            .unwrap();
-        rx.blocking_recv().unwrap().unwrap().into()
+        let command_tx = this.borrow(py).command_tx.clone();
+        Python::allow_threads(py, || {
+            command_tx
+                .blocking_send(Command::Request {
+                    peer_id: peer_id.parse().unwrap(),
+                    request: request.into(),
+                    sender: tx,
+                })
+                .unwrap();
+
+            rx.blocking_recv().unwrap().unwrap().into()
+        })
     }
 
     fn recv(this: Py<Self>, py: Python<'_>) -> Option<(PyCodecRequest, PyCallback)> {
